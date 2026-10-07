@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Publish
+        run: dotnet publish src/LiDPI -c Release -o out
+
+      - name: Compute SHA256
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash out/LiDPI.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  LiDPI.exe" | Out-File -FilePath out/LiDPI.exe.sha256.txt -Encoding ascii -NoNewline
+          Write-Host "SHA256: $hash"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: LiDPI ${{ github.ref_name }}
+          body: |
+            Windows için tek tıkla DPI engeli aşma aracı.
+
+            **Kurulum:** `LiDPI.exe` dosyasını indirip çalıştırın; kurulum ve .NET gerekmez. "Tüm Uygulamalar" modu yönetici izni ister.
+            **Doğrulama:** `LiDPI.exe.sha256.txt` içindeki SHA256 değeriyle dosyayı kontrol edebilirsiniz.
+          files: |
+            out/LiDPI.exe
+            out/LiDPI.exe.sha256.txt

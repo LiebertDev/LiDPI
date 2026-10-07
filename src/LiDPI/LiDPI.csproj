@@ -1,0 +1,41 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\LiDPI.ico</ApplicationIcon>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <AssemblyName>LiDPI</AssemblyName>
+    <RootNamespace>LiDPI</RootNamespace>
+    <Version>1.0.0</Version>
+    <!-- WPF app: DPI awareness comes from app.manifest, not the WinForms API. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WPF + WinForms implicit usings collide (Application, MessageBox, ...). Use WinForms types fully qualified. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="native\x64\WinDivert.dll" LogicalName="LiDPI.native.WinDivert.dll" />
+    <EmbeddedResource Include="native\x64\WinDivert64.sys" LogicalName="LiDPI.native.WinDivert64.sys" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\LiDPI.ico" />
+  </ItemGroup>
+
+</Project>
+

@@ -1,0 +1,28 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build
+        run: dotnet build src/LiDPI -c Release
+
+      - name: Publish
+        run: dotnet publish src/LiDPI -c Release -o out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiDPI.exe
+          path: out/LiDPI.exe
+          retention-days: 7
