@@ -23,7 +23,7 @@ public sealed class NullEngine : IBypassEngine
     public async Task StartAsync(BypassProfile profile, CancellationToken ct = default)
     {
         SetState(EngineState.Starting);
-        Write($"Simulating start with profile '{profile.Name}'.");
+        Write($"Simulating start with profile '{profile.DisplayName}'.");
         await Task.Delay(_delay, ct).ConfigureAwait(false);
         Stats.Reset();
         Stats.StartedAt = DateTime.UtcNow;

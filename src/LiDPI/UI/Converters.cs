@@ -57,3 +57,22 @@ public sealed class LogLevelToBrushConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
         throw new NotSupportedException();
 }
+
+/// <summary><see cref="ViewModels.InlineStatusKind"/> → text brush (ok mint, error red, info amber, busy/none secondary).</summary>
+public sealed class InlineStatusToBrushConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        var key = value is ViewModels.InlineStatusKind k ? k switch
+        {
+            ViewModels.InlineStatusKind.Ok => "Brush.Mint",
+            ViewModels.InlineStatusKind.Error => "Brush.Red",
+            ViewModels.InlineStatusKind.Info => "Brush.Amber",
+            _ => "Brush.TextSecondary",
+        } : "Brush.TextSecondary";
+        return Application.Current.TryFindResource(key) as Brush ?? Brushes.Gray;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}

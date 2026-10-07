@@ -1,0 +1,28 @@
+name: Özellik isteği / Feature request
+description: Yeni bir özellik veya iyileştirme önerin / Suggest a new feature or improvement
+title: "[Öneri] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Hangi sorunu çözüyor? / What problem does it solve?
+      description: Bu özelliğe neden ihtiyaç duyuyorsunuz? / Why do you need this feature?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Önerilen çözüm / Proposed solution
+      description: Nasıl çalışmasını istersiniz? / How should it work?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Düşündüğünüz alternatifler / Alternatives considered
+  - type: input
+    id: isp
+    attributes:
+      label: İnternet sağlayıcısı ve ülke (ilgiliyse) / ISP and country (if relevant)
+      placeholder: "Superonline, Türkiye"

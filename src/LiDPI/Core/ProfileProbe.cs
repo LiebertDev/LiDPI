@@ -46,13 +46,8 @@ public sealed record ProbeProgress(int Index, int Total, string VariantName, Pro
 /// </summary>
 public static class ProfileProbe
 {
-    public static IReadOnlyList<string> DefaultTargets { get; } =
-    [
-        "https://discord.com/",
-        "https://www.roblox.com/",
-        "https://www.wattpad.com/",
-        "https://www.google.com/",   // control
-    ];
+    /// <summary>Configured in one place: <see cref="ProbeTargets"/>.</summary>
+    public static IReadOnlyList<string> DefaultTargets => ProbeTargets.Urls;
 
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(6);
 
@@ -64,7 +59,7 @@ public static class ProfileProbe
         var s2d = b with { SplitPosition = 2, DisorderSegments = true };
         var list = new List<ProbeVariant>
         {
-            new("baseline (motor kapalı)", null),
+            new("baseline (engine off)", null),
             new("split 1", b with { SplitPosition = 1 }),
             new("split 1 + disorder", b with { SplitPosition = 1, DisorderSegments = true }),
             new("split 2", b with { SplitPosition = 2 }),
@@ -82,7 +77,7 @@ public static class ProfileProbe
         list.Add(new("fake wrong seq (TTL 64) + split 2 + disorder", s2d with { FakePacket = true, FakeTtl = 64, FakeWrongSeq = true }));
         list.Add(new("fake wrong seq + bad checksum x2 + split 2 + disorder", s2d with { FakePacket = true, FakeTtl = 64, FakeWrongSeq = true, WrongChecksumFake = true, FakeRepeats = 2 }));
         foreach (var p in BuiltInProfiles.All)
-            list.Add(new($"built-in: {p.Name}", p));
+            list.Add(new($"built-in: {p.Id}", p));
         return list;
     }
 
@@ -92,11 +87,12 @@ public static class ProfileProbe
     /// </summary>
     public static async Task<IReadOnlyList<ProbeVariantResult>> RunAsync(
         IReadOnlyList<ProbeVariant> variants, IReadOnlyList<string>? targets = null,
-        IProgress<ProbeProgress>? progress = null, Action<string>? diagnostics = null, int rounds = 1, CancellationToken ct = default)
+        IProgress<ProbeProgress>? progress = null, Action<string>? diagnostics = null, int rounds = 1, CancellationToken ct = default,
+        bool packetTrace = true)
     {
         targets ??= DefaultTargets;
         var results = new List<ProbeVariantResult>(variants.Count);
-        using var trace = PacketTrace.TryOpen(diagnostics);
+        using var trace = packetTrace ? PacketTrace.TryOpen(diagnostics) : null;
 
         for (int i = 0; i < variants.Count; i++)
         {
@@ -192,7 +188,7 @@ public static class ProfileProbe
             IPAddress[] ips = await System.Net.Dns.GetHostAddressesAsync(uri.Host, cts.Token).ConfigureAwait(false);
             dnsMs = dnsSw.Elapsed.TotalMilliseconds;
             addresses = string.Join(",", ips.Take(4).Select(a => a.ToString()));
-            if (ips.Length == 0) throw new IOException("DNS adres döndürmedi");
+            if (ips.Length == 0) throw new IOException("DNS returned no address");
             // prefer IPv4 (deterministic, comparable across variants)
             var ordered = ips.OrderBy(a => a.AddressFamily == AddressFamily.InterNetwork ? 0 : 1).ToArray();
 
@@ -242,7 +238,7 @@ public static class ProfileProbe
         {
             double ms = sw.Elapsed.TotalMilliseconds;
             string err = cts.IsCancellationRequested && !ct.IsCancellationRequested
-                ? $"zaman aşımı ({RequestTimeout.TotalSeconds:0} sn)"
+                ? $"timeout ({RequestTimeout.TotalSeconds:0} s)"
                 : Describe(ex);
             if (ct.IsCancellationRequested) throw;
             return new(new ProbeTargetResult(url, false, null, null, ms, dnsMs, addresses, connectedTo, err, []), localPort);
@@ -274,11 +270,11 @@ public static class ProfileProbe
     public static string FormatReport(IReadOnlyList<ProbeVariantResult> ranked, IEnumerable<string>? header = null)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("LiDPI profil sondası");
-        sb.AppendLine($"Tarih: {DateTime.Now:yyyy-MM-dd HH:mm:ss}  OS: {Environment.OSVersion}");
+        sb.AppendLine("LiDPI profile probe");
+        sb.AppendLine($"Date: {DateTime.Now:yyyy-MM-dd HH:mm:ss}  OS: {Environment.OSVersion}");
         if (header is not null) foreach (var h in header) sb.AppendLine(h);
         sb.AppendLine();
-        sb.AppendLine("SIRALAMA (OK = HTTP durum kodu alındı, yani TLS başarılı)");
+        sb.AppendLine("RANKING (OK = got an HTTP status code, i.e. TLS worked)");
         sb.AppendLine(new string('-', 120));
         int rank = 0;
         foreach (var r in ranked)
@@ -293,13 +289,13 @@ public static class ProfileProbe
         }
 
         sb.AppendLine();
-        sb.AppendLine("AYRINTILAR");
+        sb.AppendLine("DETAILS");
         foreach (var r in ranked)
         {
             sb.AppendLine(new string('=', 120));
             sb.AppendLine($"{r.Variant.Name}  [{r.OkCount}/{r.Targets.Count}]");
             if (r.Variant.Profile is { } p)
-                sb.AppendLine($"  profil: splitHello={p.SplitTlsHello} atSni={p.SplitAtSni} pos={p.SplitPosition} disorder={p.DisorderSegments} " +
+                sb.AppendLine($"  profile: splitHello={p.SplitTlsHello} atSni={p.SplitAtSni} pos={p.SplitPosition} disorder={p.DisorderSegments} " +
                               $"fake={p.FakePacket} ttl={p.FakeTtl} badSum={p.WrongChecksumFake} wrongSeq={p.FakeWrongSeq} rep={p.FakeRepeats} " +
                               $"quic={p.BlockQuic} dns={p.Dns}");
             foreach (var t in r.Targets)
@@ -377,15 +373,15 @@ public static class ProfileProbe
                     WinDivertNative.FlagSniff | WinDivertNative.FlagRecvOnly);
                 if (h == WinDivertNative.InvalidHandle || h == IntPtr.Zero)
                 {
-                    diag?.Invoke($"Paket izleyici açılamadı: {WinDivertNative.DescribeOpenError(Marshal.GetLastPInvokeError())}");
+                    diag?.Invoke($"Packet trace failed to open: {WinDivertNative.DescribeOpenError(Marshal.GetLastPInvokeError())}");
                     return null;
                 }
-                diag?.Invoke("Paket izleyici açık (öncelik -1000, sniff).");
+                diag?.Invoke("Packet trace open (priority -1000, sniff).");
                 return new PacketTrace(h, !wasRunning);
             }
             catch (Exception ex)
             {
-                diag?.Invoke($"Paket izleyici açılamadı: {ex.Message}");
+                diag?.Invoke($"Packet trace failed to open: {ex.Message}");
                 return null;
             }
         }
@@ -394,7 +390,7 @@ public static class ProfileProbe
 
         public IReadOnlyList<string> Get(int localPort)
         {
-            if (localPort <= 0 || !_conns.TryGetValue(localPort, out var c)) return ["(izleme kaydı yok)"];
+            if (localPort <= 0 || !_conns.TryGetValue(localPort, out var c)) return ["(no trace)"];
             lock (c) return c.Events.ToList();
         }
 

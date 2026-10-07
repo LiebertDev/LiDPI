@@ -33,10 +33,19 @@ jobs:
         with:
           name: LiDPI ${{ github.ref_name }}
           body: |
-            Windows için tek tıkla DPI engeli aşma aracı.
+            Windows için tek tıkla açılıp kapanan bir DPI engeli aşma aracı.
 
-            **Kurulum:** `LiDPI.exe` dosyasını indirip çalıştırın; kurulum ve .NET gerekmez. "Tüm Uygulamalar" modu yönetici izni ister.
-            **Doğrulama:** `LiDPI.exe.sha256.txt` içindeki SHA256 değeriyle dosyayı kontrol edebilirsiniz.
+            **Nasıl kurulur?** `LiDPI.exe` dosyasını indirip çalıştırmanız yeterli. Kurulum ya da .NET gerekmez. Program yönetici izni ister, çünkü "Tüm Uygulamalar" modu bir sürücü yükler.
+            **Dosyayı doğrulamak için** `LiDPI.exe.sha256.txt` içindeki SHA256 değerine bakabilirsiniz.
+            **Uyarı mı aldınız?** Windows SmartScreen ya da antivirüsünüz uyarı verirse README'deki "Sık sorulan sorular" bölümüne göz atın.
+
+            ---
+
+            A one-button DPI bypass tool for Windows.
+
+            **Install:** download `LiDPI.exe` and run it. No installer, no .NET needed. It asks for admin rights because "All apps" mode loads a driver.
+            **Verify:** compare the file with the SHA256 in `LiDPI.exe.sha256.txt`.
+            **Got a warning?** If SmartScreen or your antivirus complains, see the FAQ in the README.
           files: |
             out/LiDPI.exe
             out/LiDPI.exe.sha256.txt

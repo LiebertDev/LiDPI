@@ -17,10 +17,23 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <AssemblyName>LiDPI</AssemblyName>
     <RootNamespace>LiDPI</RootNamespace>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <!-- WPF app: DPI awareness comes from app.manifest, not the WinForms API. -->
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
   </PropertyGroup>
+
+  <!-- Runtime footprint: the app idles in the tray all day, so favour a small heap over throughput. -->
+  <PropertyGroup>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+    <TieredCompilationQuickJitForLoops>true</TieredCompilationQuickJitForLoops>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 0-9: how hard the GC compacts to keep the heap small (runtimeconfig System.GC.ConserveMemory). -->
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="7" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- WPF + WinForms implicit usings collide (Application, MessageBox, ...). Use WinForms types fully qualified. -->
@@ -31,6 +44,11 @@
   <ItemGroup>
     <EmbeddedResource Include="native\x64\WinDivert.dll" LogicalName="LiDPI.native.WinDivert.dll" />
     <EmbeddedResource Include="native\x64\WinDivert64.sys" LogicalName="LiDPI.native.WinDivert64.sys" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- UI languages (flat key -> text). Extra languages can also be dropped into %AppData%\LiDPI\lang at run time. -->
+    <EmbeddedResource Include="Localization\*.json" LogicalName="LiDPI.Localization.%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

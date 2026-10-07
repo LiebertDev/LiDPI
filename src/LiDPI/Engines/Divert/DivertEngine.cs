@@ -1,11 +1,11 @@
 using System.Buffers;
-using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using LiDPI.Core;
 using LiDPI.Dns;
+using LiDPI.UI;
 
 namespace LiDPI.Engines.Divert;
 
@@ -25,16 +25,19 @@ public sealed class DivertEngine : IBypassEngine
     private const byte FallbackFakeTtl = 4;
     private const int MinAutoFakeTtl = 3;
     private const int MaxHopCacheEntries = 16384;
+    /// <summary>Learned hop counts go stale (route / network changes): the whole cache is dropped this often.</summary>
+    private const long HopCacheLifetimeMs = 30 * 60 * 1000;
     private const string DriverServiceName = "WinDivert";
 
     /// <summary>Process names (lowercase, no .exe) of other DPI tools that conflict with this engine.</summary>
-    private static readonly string[] ConflictingTools = ["goodbyedpi", "winws", "zapret", "splitwire"];
+    internal static readonly string[] ConflictingTools = ["goodbyedpi", "winws", "zapret", "splitwire"];
 
     private const string SniffFilter =
         "inbound and !loopback and !impostor and tcp and tcp.Syn and tcp.Ack and tcp.SrcPort == 443";
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ConcurrentDictionary<UInt128, byte> _hopTtl = new();
+    private long _hopCacheSince = Environment.TickCount64;   // sniff thread only
 
     private BypassProfile _profile = BuiltInProfiles.Standard;
     private IntPtr _main = WinDivertNative.InvalidHandle;
@@ -42,6 +45,7 @@ public sealed class DivertEngine : IBypassEngine
     private Thread? _mainThread;
     private Thread? _sniffThread;
     private DohResolver? _resolver;
+    private TcpDnsResponder? _tcpDns;
     private CancellationTokenSource? _cts;
     private byte[] _segBuf = [];
     private byte[] _fakeBuf = [];
@@ -59,7 +63,7 @@ public sealed class DivertEngine : IBypassEngine
     private int _warnCount, _debugCount;
 
     public EngineMode Mode => EngineMode.Divert;
-    public string DisplayName => "Tüm Uygulamalar";
+    public string DisplayName => Strings.ModeAll;
     public bool RequiresAdmin => true;
     public EngineState State { get; private set; } = EngineState.Stopped;
     public EngineStats Stats { get; } = new();
@@ -88,7 +92,7 @@ public sealed class DivertEngine : IBypassEngine
             }
             catch (Exception ex)
             {
-                Write("Error", ex is DivertStartException ? ex.Message : $"Paket motoru başlatılamadı: {ex.Message}");
+                Write("Error", ex is DivertStartException ? ex.Message : Strings.LogDivertStartFailed(ex.Message));
                 Teardown(fromExit: false);
                 SetState(EngineState.Error);
                 return;
@@ -115,8 +119,8 @@ public sealed class DivertEngine : IBypassEngine
             SetState(EngineState.Stopping);
             await Task.Run(() => Teardown(fromExit: false)).ConfigureAwait(false);
             SetState(EngineState.Stopped);
-            if (wasRunning) Write("Info", "Paket motoru durduruldu.");
-            if (DnsCache.Flush()) Write("Info", "DNS önbelleği temizlendi.");
+            if (wasRunning) Write("Info", Strings.LogDivertStopped);
+            if (DnsCache.Flush()) Write("Info", Strings.LogDnsFlushed);
         }
         finally
         {
@@ -129,8 +133,8 @@ public sealed class DivertEngine : IBypassEngine
     /// </summary>
     private void FlushDnsAfterStart()
     {
-        if (DnsCache.Flush()) Write("Info", "DNS önbelleği temizlendi.");
-        Write("Info", "İpucu: Discord gibi açık uygulamaları bir kez yeniden başlatın.");
+        if (DnsCache.Flush()) Write("Info", Strings.LogDnsFlushed);
+        Write("Info", Strings.LogRestartAppsHint);
     }
 
     public async ValueTask DisposeAsync() => await StopAsync().ConfigureAwait(false);
@@ -150,7 +154,7 @@ public sealed class DivertEngine : IBypassEngine
         }
         catch (Exception ex)
         {
-            throw new DivertStartException($"WinDivert bileşenleri hazırlanamadı: {ex.Message}");
+            throw new DivertStartException(Strings.ErrDivertPrepare(ex.Message));
         }
         ct.ThrowIfCancellationRequested();
 
@@ -168,18 +172,22 @@ public sealed class DivertEngine : IBypassEngine
 
         if (doh)
         {
-            _resolver = new DohResolver(DohResolver.FindProvider(p.DohProviderName));
+            _resolver = new DohResolver(DohResolver.PrepareProvider(p.DohProviderName, m => Write("Info", m)));
             _resolver.Warning += m => LimitedWrite("Warn", m);
+            var resolver = _resolver;
+            _tcpDns = new TcpDnsResponder(resolver.QueryRawAsync, SendInbound, _cts.Token,
+                warn: m => { if (!_stopping) LimitedWrite("Warn", m); },
+                answered: () => Stats.IncrementDnsQueries());
         }
 
         if (filter is null)
         {
-            Write("Warn", "Profil hiçbir paket tekniği içermiyor; trafik değiştirilmeyecek.");
+            Write("Warn", Strings.LogNoTechniques);
         }
         else
         {
             if (WinDivertNative.CheckFilter(filter) is { } err)
-                throw new DivertStartException($"WinDivert filtresi derlenemedi: {err}");
+                throw new DivertStartException(Strings.ErrDivertFilter(err));
             if (WinDivertLoader.SysPath is { } sysPath)
                 DriverServices.DeleteIfStale(DriverServiceName, sysPath, m => Write("Info", m));
             bool driverWasRunning = DriverServices.IsRunning(DriverServiceName);
@@ -194,7 +202,7 @@ public sealed class DivertEngine : IBypassEngine
                 }
                 catch (DivertStartException ex)
                 {
-                    Write("Warn", $"Otomatik TTL kapatıldı (sabit TTL {FallbackFakeTtl} kullanılacak): {ex.Message}");
+                    Write("Warn", Strings.LogAutoTtlOff(FallbackFakeTtl, ex.Message));
                 }
             }
         }
@@ -216,7 +224,7 @@ public sealed class DivertEngine : IBypassEngine
             _sniffThread.Start();
         }
 
-        Write("Info", $"Paket motoru çalışıyor ({Describe(p)}).");
+        Write("Info", Strings.LogDivertRunning(Describe(p)));
     }
 
     private static IntPtr Open(string filter, short priority, ulong flags)
@@ -242,6 +250,10 @@ public sealed class DivertEngine : IBypassEngine
             JoinQuietly(_sniffThread);
         }
 
+        // reset the emulated TCP/53 connections while the handle can still send (clients retry at once
+        // instead of waiting for a dead connection)
+        try { _tcpDns?.AbortAll(); } catch { /* best effort */ }
+
         _closing = true;
         Interlocked.MemoryBarrier();
         var sw = Stopwatch.StartNew();
@@ -261,6 +273,8 @@ public sealed class DivertEngine : IBypassEngine
         _onProcessExit = null;
         _onUnhandled = null;
 
+        _tcpDns?.Dispose();
+        _tcpDns = null;
         sw.Restart();
         while (Volatile.Read(ref _dnsInFlight) != 0 && sw.ElapsedMilliseconds < 1000) Thread.Sleep(5);
         _resolver?.Dispose();
@@ -308,11 +322,11 @@ public sealed class DivertEngine : IBypassEngine
                         int err = Marshal.GetLastPInvokeError();
                         if (err is ErrorNoData or ErrorInvalidHandle or ErrorOperationAborted || _stopping)
                         {
-                            if (!_stopping) failure = $"WinDivert hata {err}";
+                            if (!_stopping) failure = Strings.FailWinDivertError(err);
                             break;
                         }
                         if (err == ErrorInsufficientBuffer) continue;
-                        LimitedWrite("Warn", $"Paket alınamadı (hata {err}).");
+                        LimitedWrite("Warn", Strings.LogRecvFailed(err));
                         if (++consecutiveErrors > 100) Thread.Sleep(10);
                         continue;
                     }
@@ -326,7 +340,7 @@ public sealed class DivertEngine : IBypassEngine
                     }
                     catch (Exception ex)
                     {
-                        LimitedWrite("Warn", $"Paket işlenemedi: {ex.Message}");
+                        LimitedWrite("Warn", Strings.LogPacketFailed(ex.Message));
                         // nothing went out for this packet yet: pass the original through so it isn't lost
                         if (!_handled)
                         {
@@ -341,7 +355,7 @@ public sealed class DivertEngine : IBypassEngine
         {
             failure = ex.Message;
         }
-        if (!_stopping) FailClosed(failure ?? "bilinmeyen neden");
+        if (!_stopping) FailClosed(failure ?? Strings.FailUnknown);
     }
 
     /// <summary>
@@ -371,7 +385,7 @@ public sealed class DivertEngine : IBypassEngine
         }
         catch { /* best effort */ }
 
-        Write("Error", $"Paket döngüsü beklenmedik şekilde sonlandı ({reason}). Trafiğin kesilmemesi için paket motoru kapatıldı; lütfen yeniden bağlanın.");
+        Write("Error", Strings.LogLoopDied(reason));
         if (State == EngineState.Running) SetState(EngineState.Error);
     }
 
@@ -402,7 +416,7 @@ public sealed class DivertEngine : IBypassEngine
         }
         catch (Exception ex)
         {
-            Write("Warn", $"TTL dinleyicisi durdu: {ex.Message}");
+            Write("Warn", Strings.LogTtlListenerStopped(ex.Message));
         }
     }
 
@@ -414,7 +428,13 @@ public sealed class DivertEngine : IBypassEngine
         // before the server: hops-2, at least MinAutoFakeTtl, never more than hops-1.
         int fakeTtl = hops - 1 >= MinAutoFakeTtl ? Math.Max(hops - 2, MinAutoFakeTtl) : hops - 1;
         byte fake = (byte)Math.Clamp(fakeTtl, 1, 255);
-        if (_hopTtl.Count >= MaxHopCacheEntries) _hopTtl.Clear();
+        long now = Environment.TickCount64;
+        if (_hopTtl.Count >= MaxHopCacheEntries || now - _hopCacheSince > HopCacheLifetimeMs)
+        {
+            // bounded + expiring; every flow re-learns from its own SYN-ACK before its ClientHello anyway
+            _hopTtl.Clear();
+            _hopCacheSince = now;
+        }
         _hopTtl[key] = fake;
     }
 
@@ -434,6 +454,16 @@ public sealed class DivertEngine : IBypassEngine
         {
             if (pi.DstPort == 443 && _profile.BlockQuic) return;   // drop QUIC -> browsers fall back to TCP
             if (pi.DstPort == 53 && _resolver is not null && TryQueueDns(pkt, pi, addr)) return;
+        }
+        else if (pi.Protocol == PacketInfo.ProtoTcp && pi.DstPort == 53)
+        {
+            // DoH mode: every TCP/53 segment is consumed (answered, or reset when unknown) — never reinjected
+            // to the possibly poisoned network resolver
+            if (_tcpDns is { } tcpDns && tcpDns.Handle(pkt, pi, addr))
+            {
+                _handled = true;
+                return;
+            }
         }
         else if (pi.Protocol == PacketInfo.ProtoTcp && pi.PayloadLength > 0)
         {
@@ -461,7 +491,7 @@ public sealed class DivertEngine : IBypassEngine
 
         Stats.IncrementConnections();
         Stats.IncrementClientHellosModified();
-        if (DebugAllowed()) Write("Debug", $"TLS: {TlsClientHello.GetSni(payload) ?? "(SNI yok)"} ({pi.PayloadLength} B, bölme {split})");
+        if (DebugAllowed()) Write("Debug", $"TLS: {TlsClientHello.GetSni(payload) ?? "(no SNI)"} ({pi.PayloadLength} B, split {split})");
 
         if (p.FakePacket)
         {
@@ -506,36 +536,19 @@ public sealed class DivertEngine : IBypassEngine
     /// <summary>Sends payload[start..start+len] with the original headers, fixed seq/lengths/checksums.</summary>
     private void SendSegment(ReadOnlySpan<byte> pkt, in PacketInfo pi, int start, int len, int ipIdDelta, WinDivertAddress addr)
     {
-        int hdr = pi.PayloadOffset;
-        var seg = _segBuf.AsSpan(0, hdr + len);
-        pkt[..hdr].CopyTo(seg);
-        pkt.Slice(hdr + start, len).CopyTo(seg[hdr..]);
-        pi.SetTotalLength(seg, seg.Length);
-        pi.SetSeq(seg, pi.GetSeq(pkt) + (uint)start);
-        pi.BumpIpId(seg, ipIdDelta);
-        WinDivertNative.Send(_main, seg, ref addr, recalc: true);
+        int n = PacketBuilder.BuildSegment(pkt, pi, start, len, ipIdDelta, _segBuf);
+        WinDivertNative.Send(_main, _segBuf.AsSpan(0, n), ref addr, recalc: true);
         _handled = true;
     }
 
     /// <summary>Sends a decoy ClientHello with the real sequence number but a TTL that dies before the server.</summary>
     private void SendFake(ReadOnlySpan<byte> pkt, in PacketInfo pi, WinDivertAddress addr)
     {
-        int hdr = pi.PayloadOffset;
-        var buf = _fakeBuf.AsSpan();
-        pkt[..hdr].CopyTo(buf);
-        int fakeLen = TlsClientHello.BuildFake(buf[hdr..], pi.PayloadLength);
-        if (fakeLen <= 0) return;
-
-        var fake = buf[..(hdr + fakeLen)];
-        pi.SetTotalLength(fake, fake.Length);
-        pi.SetTtl(fake, FakeTtlFor(pkt));
-        if (_profile.FakeWrongSeq) pi.SetSeq(fake, pi.GetSeq(pkt) - 10000u);
+        int n = PacketBuilder.BuildFake(pkt, pi, FakeTtlFor(pkt), _profile.FakeWrongSeq, _fakeBuf);
+        if (n <= 0) return;
+        var fake = _fakeBuf.AsSpan(0, n);
         WinDivertNative.CalcChecksums(fake, ref addr);
-        if (_profile.WrongChecksumFake)
-        {
-            var cs = fake.Slice(pi.L4Offset + 16, 2);
-            BinaryPrimitives.WriteUInt16BigEndian(cs, (ushort)(BinaryPrimitives.ReadUInt16BigEndian(cs) ^ 0xA5A5));
-        }
+        if (_profile.WrongChecksumFake) PacketBuilder.CorruptTcpChecksum(fake, pi);
         if (WinDivertNative.SendRaw(_main, fake, ref addr)) Stats.IncrementFakePackets();
     }
 
@@ -584,7 +597,7 @@ public sealed class DivertEngine : IBypassEngine
             catch (Exception ex)
             {
                 if (_stopping) return;
-                LimitedWrite("Warn", $"DoH başarısız, DNS sorgusu olduğu gibi gönderildi: {ex.Message}");
+                LimitedWrite("Warn", Strings.LogDohPassthrough(ex.Message));
                 var orig = job.Addr;
                 GuardedSend(job.Packet.AsSpan(0, job.Length), ref orig, recalc: false);
                 return;
@@ -592,53 +605,22 @@ public sealed class DivertEngine : IBypassEngine
 
             resp[0] = query[0];   // keep the client's transaction id
             resp[1] = query[1];
-            if (resp.Length > MaxDnsUdpResponse) resp = DnsWire.BuildTruncatedReply(query) ?? resp;
+            // Honour the client's UDP size (512 or its EDNS size): strip authority/additional first; only if the
+            // answers alone do not fit is TC set — the TCP retry is then answered by TcpDnsResponder via DoH.
+            resp = DnsWire.FitToUdp(resp, DnsWire.GetClientUdpLimit(query, MaxDnsUdpResponse))
+                   ?? DnsWire.BuildTruncatedReply(query) ?? resp;
 
-            int ipLen = pi.IsV6 ? 40 : 20;
-            int total = ipLen + 8 + resp.Length;
-            if (total > 0xFFFF) return;
-
-            outBuf = ArrayPool<byte>.Shared.Rent(total);
+            outBuf = ArrayPool<byte>.Shared.Rent(40 + 8 + resp.Length);
+            int total = PacketBuilder.BuildUdpReply(job.Packet.AsSpan(0, job.Length), pi, resp, outBuf);
+            if (total <= 0) return;
             var o = outBuf.AsSpan(0, total);
-            var src = job.Packet.AsSpan(0, job.Length);
-            o[..ipLen].Clear();
-            if (pi.IsV6)
-            {
-                o[0] = 0x60;
-                BinaryPrimitives.WriteUInt16BigEndian(o[4..], (ushort)(8 + resp.Length));
-                o[6] = PacketInfo.ProtoUdp;
-                o[7] = 64;
-                src.Slice(24, 16).CopyTo(o[8..]);    // src = original destination
-                src.Slice(8, 16).CopyTo(o[24..]);    // dst = original source
-            }
-            else
-            {
-                o[0] = 0x45;
-                BinaryPrimitives.WriteUInt16BigEndian(o[2..], (ushort)total);
-                BinaryPrimitives.WriteUInt16BigEndian(o[4..], (ushort)Random.Shared.Next(0x10000));
-                o[8] = 64;
-                o[9] = PacketInfo.ProtoUdp;
-                src.Slice(16, 4).CopyTo(o[12..]);
-                src.Slice(12, 4).CopyTo(o[16..]);
-            }
-            var udp = o[ipLen..];
-            BinaryPrimitives.WriteUInt16BigEndian(udp, pi.DstPort);
-            BinaryPrimitives.WriteUInt16BigEndian(udp[2..], pi.SrcPort);
-            BinaryPrimitives.WriteUInt16BigEndian(udp[4..], (ushort)(8 + resp.Length));
-            udp[6] = udp[7] = 0;
-            resp.CopyTo(udp[8..]);
 
             var addr = job.Addr;
-            addr.Outbound = false;
-            addr.Sniffed = false;
-            addr.Impostor = false;
-            addr.Loopback = false;
-            addr.IPv6 = pi.IsV6;
-            if (GuardedSend(o, ref addr, recalc: true)) Stats.IncrementDnsQueries();
+            if (SendInbound(o, addr)) Stats.IncrementDnsQueries();
         }
         catch (Exception ex)
         {
-            if (!_stopping) LimitedWrite("Warn", $"DNS yanıtı enjekte edilemedi: {ex.Message}");
+            if (!_stopping) LimitedWrite("Warn", Strings.LogDnsInjectFailed(ex.Message));
         }
         finally
         {
@@ -646,6 +628,18 @@ public sealed class DivertEngine : IBypassEngine
             if (outBuf is not null) ArrayPool<byte>.Shared.Return(outBuf);
             Interlocked.Decrement(ref _dnsInFlight);
         }
+    }
+
+    /// <summary>Injects a locally built reply as an inbound packet on the interface of <paramref name="template"/>; checksums are computed here.</summary>
+    private bool SendInbound(Span<byte> pkt, in WinDivertAddress template)
+    {
+        var addr = template;
+        addr.Outbound = false;
+        addr.Sniffed = false;
+        addr.Impostor = false;
+        addr.Loopback = false;
+        addr.IPv6 = (pkt[0] >> 4) == 6;
+        return GuardedSend(pkt, ref addr, recalc: true);
     }
 
     /// <summary>Send from a non-recv thread; refuses once the handle is being closed.</summary>
@@ -669,7 +663,7 @@ public sealed class DivertEngine : IBypassEngine
 
     internal static string? BuildMainFilter(BypassProfile p, bool doh)
     {
-        var parts = new List<string>(4);
+        var parts = new List<string>(5);
         if (p.SplitTlsHello || p.FakePacket)
             parts.Add("(tcp and tcp.DstPort == 443 and tcp.PayloadLength > 5 and tcp.Payload[0] == 22 and tcp.Payload[1] == 3 and tcp.Payload[5] == 1)");
         if (p.HttpHostTricks)
@@ -677,7 +671,10 @@ public sealed class DivertEngine : IBypassEngine
         if (p.BlockQuic)
             parts.Add("(udp and udp.DstPort == 443)");
         if (doh)
+        {
             parts.Add("(udp and udp.DstPort == 53)");
+            parts.Add("(tcp and tcp.DstPort == 53)");
+        }
         if (parts.Count == 0) return null;
         return "outbound and !loopback and !impostor and (" + string.Join(" or ", parts) + ")";
     }
@@ -687,19 +684,19 @@ public sealed class DivertEngine : IBypassEngine
     private static string Describe(BypassProfile p)
     {
         var t = new List<string>();
-        if (p.SplitTlsHello) t.Add(p.SplitAtSni ? "SNI'de bölme" : $"{p.SplitPosition}. baytta bölme");
-        if (p.DisorderSegments) t.Add("ters sıra");
-        if (p.FakePacket) t.Add(p.FakeTtl > 0 ? $"sahte paket (TTL {p.FakeTtl})" : "sahte paket (otomatik TTL)");
-        if (p.WrongChecksumFake) t.Add("hatalı checksum");
-        if (p.FakeWrongSeq) t.Add("hatalı seq");
-        if (p.FakePacket && p.FakeRepeats > 1) t.Add($"sahte x{Math.Clamp(p.FakeRepeats, 1, 5)}");
-        if (p.HttpHostTricks) t.Add("HTTP Host hilesi");
-        if (p.BlockQuic) t.Add("QUIC engelleme");
+        if (p.SplitTlsHello) t.Add(p.SplitAtSni ? Strings.DescSplitSni : Strings.DescSplitAt(p.SplitPosition));
+        if (p.DisorderSegments) t.Add(Strings.DescDisorder);
+        if (p.FakePacket) t.Add(Strings.DescFakePacket(p.FakeTtl > 0 ? $"TTL {p.FakeTtl}" : Strings.DescAutoTtl));
+        if (p.WrongChecksumFake) t.Add(Strings.DescBadChecksum);
+        if (p.FakeWrongSeq) t.Add(Strings.DescBadSeq);
+        if (p.FakePacket && p.FakeRepeats > 1) t.Add(Strings.DescFakeRepeat(Math.Clamp(p.FakeRepeats, 1, 5)));
+        if (p.HttpHostTricks) t.Add(Strings.DescHostTrick);
+        if (p.BlockQuic) t.Add(Strings.DescBlockQuic);
         if (p.Dns == DnsMode.DoH) t.Add($"DoH: {DohResolver.FindProvider(p.DohProviderName).Name}");
-        return t.Count == 0 ? "teknik yok" : string.Join(", ", t);
+        return t.Count == 0 ? Strings.DescNoTechnique : string.Join(", ", t);
     }
 
-    private static bool IsAdministrator()
+    internal static bool IsAdministrator()
     {
         try
         {
@@ -720,12 +717,12 @@ public sealed class DivertEngine : IBypassEngine
             try { procs = Process.GetProcessesByName(name); }
             catch { /* ignore */ }
             if (procs.Length > 0)
-                Write("Warn", $"Çakışan bir DPI aracı çalışıyor ({name}.exe). Lütfen önce onu kapatın.");
+                Write("Warn", Strings.LogConflictTool(name));
             foreach (var pr in procs) pr.Dispose();
         }
         foreach (var svc in DriverServices.Running())
             if (!svc.Equals("WinDivert", StringComparison.OrdinalIgnoreCase))
-                Write("Warn", $"Başka bir programın yüklediği bir WinDivert sürücüsü çalışıyor ({svc}). Sorun yaşarsanız diğer DPI araçlarını kapatıp tekrar deneyin.");
+                Write("Warn", Strings.LogForeignDriver(svc));
     }
 
     private bool DebugAllowed() => Allow(ref _debugWindow, ref _debugCount, 20);

@@ -12,8 +12,6 @@ public static class BuiltInProfiles
     public static BypassProfile Standard { get; } = new()
     {
         Id = "standard",
-        Name = "Türkiye Standart",
-        Description = "Sahte paket (otomatik TTL, x2) + 2. baytta bölme + ters sıra + DoH + QUIC engelleme",
         SplitTlsHello = true,
         SplitAtSni = false,
         SplitPosition = 2,
@@ -29,8 +27,6 @@ public static class BuiltInProfiles
     public static BypassProfile Light { get; } = new()
     {
         Id = "light",
-        Name = "Hafif",
-        Description = "Yalnızca SNI'de bölme + DoH (sahte paket yok; birçok hatta yetersiz)",
         SplitTlsHello = true,
         Dns = DnsMode.DoH,
     };
@@ -39,8 +35,6 @@ public static class BuiltInProfiles
     public static BypassProfile Aggressive { get; } = new()
     {
         Id = "aggressive",
-        Name = "Agresif",
-        Description = "Sahte paket (otomatik TTL, x3) + 1. baytta bölme + ters sıra + DoH + QUIC engelleme",
         SplitTlsHello = true,
         SplitAtSni = false,
         SplitPosition = 1,
@@ -56,8 +50,6 @@ public static class BuiltInProfiles
     public static BypassProfile Superonline { get; } = new()
     {
         Id = "superonline",
-        Name = "Superonline",
-        Description = "Sahte paket (TTL 3) + bölme + DoH",
         SplitTlsHello = true,
         FakePacket = true,
         FakeTtl = 3,
@@ -68,8 +60,6 @@ public static class BuiltInProfiles
     public static BypassProfile Ttnet { get; } = new()
     {
         Id = "ttnet",
-        Name = "Türk Telekom",
-        Description = "Sahte paket (TTL 5) + 2. baytta bölme + ters sıra + DoH + QUIC engelleme",
         SplitTlsHello = true,
         SplitAtSni = false,
         SplitPosition = 2,
@@ -80,6 +70,6 @@ public static class BuiltInProfiles
         BlockQuic = true,
     };
 
-    /// <summary>All built-in profiles.</summary>
+    /// <summary>All built-in profiles. Names and descriptions are in the language files ("Profile.{Id}.Name" / ".Desc").</summary>
     public static IReadOnlyList<BypassProfile> All { get; } = [Standard, Light, Aggressive, Superonline, Ttnet];
 }

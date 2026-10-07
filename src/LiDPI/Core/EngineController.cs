@@ -1,3 +1,5 @@
+using LiDPI.UI;
+
 namespace LiDPI.Core;
 
 /// <summary>
@@ -70,13 +72,13 @@ public sealed class EngineController
             engine.StateChanged += OnEngineStateChanged;
             engine.Log += OnEngineLog;
             _engine = engine;
-            WriteLog("Info", $"{engine.DisplayName} başlatılıyor (profil: '{Profile.Name}').");
+            WriteLog("Info", Strings.LogEngineStarting(engine.DisplayName, Profile.DisplayName));
             await engine.StartAsync(Profile).ConfigureAwait(false);
             SetState(engine.State == EngineState.Error ? EngineState.Error : EngineState.Running);
         }
         catch (Exception ex)
         {
-            WriteLog("Error", $"Başlatılamadı: {ex.Message}");
+            WriteLog("Error", Strings.LogEngineStartFailed(ex.Message));
             await DisposeEngineAsync().ConfigureAwait(false);
             SetState(EngineState.Error);
         }
@@ -94,11 +96,11 @@ public sealed class EngineController
         try
         {
             await _engine.StopAsync().ConfigureAwait(false);
-            WriteLog("Info", "Durduruldu.");
+            WriteLog("Info", Strings.LogEngineStopped);
         }
         catch (Exception ex)
         {
-            WriteLog("Error", $"Durdurma başarısız: {ex.Message}");
+            WriteLog("Error", Strings.LogEngineStopFailed(ex.Message));
         }
         await DisposeEngineAsync().ConfigureAwait(false);
         SetState(EngineState.Stopped);
@@ -112,7 +114,7 @@ public sealed class EngineController
         engine.StateChanged -= OnEngineStateChanged;
         engine.Log -= OnEngineLog;
         try { await engine.DisposeAsync().ConfigureAwait(false); }
-        catch (Exception ex) { WriteLog("Error", $"Kaynaklar serbest bırakılamadı: {ex.Message}"); }
+        catch (Exception ex) { WriteLog("Error", Strings.LogEngineDisposeFailed(ex.Message)); }
     }
 
     private void OnEngineStateChanged(object? sender, EngineState s)

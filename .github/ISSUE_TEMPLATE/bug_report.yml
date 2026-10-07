@@ -1,0 +1,74 @@
+name: Hata bildirimi / Bug report
+description: LiDPI beklendiği gibi çalışmıyor / LiDPI does not work as expected
+title: "[Hata] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Bildirdiğiniz için teşekkürler! Lütfen önce **Ayarlar → Hakkında → Tanı raporu** (veya Kayıtlar penceresindeki **Tanı raporu** düğmesi) ile bir rapor oluşturup aşağıya ekleyin. Kullanıcı adı, bilgisayar adı, yerel IP ve MAC adresleri rapordan otomatik olarak çıkarılır.
+
+        Thanks for reporting! Please first create a report via **Settings → About → Diagnostic report** (or the **Tanı raporu** button in the log drawer) and attach it below. User name, computer name, local IPs and MAC addresses are removed automatically.
+  - type: textarea
+    id: description
+    attributes:
+      label: Sorun nedir? / What happened?
+      description: Ne bekliyordunuz, ne oldu? / What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Yeniden oluşturma adımları / Steps to reproduce
+      placeholder: |
+        1. "Tüm Uygulamalar" modunu seçtim / Selected "All Apps" mode
+        2. "Türkiye Standart" profiliyle bağlandım / Connected with the "Türkiye Standart" profile
+        3. discord.com açılmadı / discord.com did not open
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Tanı raporu / Diagnostic report
+      description: LiDPI-tani-….txt dosyasını buraya sürükleyin veya içeriğini yapıştırın. / Drag the LiDPI-tani-….txt file here or paste its content.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows sürümü / Windows version
+      placeholder: "Windows 11 23H2 (build 22631)"
+    validations:
+      required: true
+  - type: input
+    id: isp
+    attributes:
+      label: İnternet sağlayıcısı ve ülke / ISP and country
+      placeholder: "Türk Telekom, Türkiye"
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mod / Mode
+      options:
+        - Tüm Uygulamalar / All Apps
+        - Sadece Tarayıcı / Browser Only
+        - İkisi de / Both
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: LiDPI sürümü / LiDPI version
+      placeholder: "1.1.0"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Kontrol listesi / Checklist
+      options:
+        - label: Başka bir DPI aracı (GoodbyeDPI, zapret vb.) çalışmıyor. / No other DPI tool (GoodbyeDPI, zapret, …) is running.
+          required: false
+        - label: "\"En iyi ayarı otomatik bul\"u denedim. / I tried \"Auto-find best settings\"."
+          required: false

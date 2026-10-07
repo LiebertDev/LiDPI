@@ -5,6 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:c="clr-namespace:LiDPI.UI.Controls"
         xmlns:ui="clr-namespace:LiDPI.UI"
+        xmlns:l="clr-namespace:LiDPI.Localization"
         xmlns:vm="clr-namespace:LiDPI.UI.ViewModels"
         xmlns:po="http://schemas.microsoft.com/winfx/2006/xaml/presentation/options"
         mc:Ignorable="d po"
@@ -27,6 +28,20 @@
         <ui:StateToBrushConverter x:Key="StateBrush" />
         <ui:BoolToVisibilityConverter x:Key="BoolVis" />
         <ui:LogLevelToBrushConverter x:Key="LevelBrush" />
+        <ui:InlineStatusToBrushConverter x:Key="StatusBrush" />
+        <l:LiveTextConverter x:Key="LiveText" />
+
+        <!-- list item whose text follows the UI language (DoH chips, health interval, profiles use the converter directly) -->
+        <DataTemplate x:Key="LiveTextItem">
+            <TextBlock>
+                <TextBlock.Text>
+                    <MultiBinding Converter="{StaticResource LiveText}">
+                        <Binding />
+                        <Binding Path="Version" Source="{x:Static l:Loc.Instance}" />
+                    </MultiBinding>
+                </TextBlock.Text>
+            </TextBlock>
+        </DataTemplate>
 
         <!-- shield glyph in a 24x24 box (same shape as the app icon) -->
         <PathGeometry x:Key="ShieldGlyph" po:Freeze="True"
@@ -109,11 +124,11 @@
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0">
                         <Button Style="{StaticResource IconButton}" Content="&#xE713;" FontSize="13.5"
-                                ToolTip="Ayarlar" Click="OpenSettings_Click" />
+                                ToolTip="{l:T WindowSettings}" Click="OpenSettings_Click" />
                         <Button Style="{StaticResource IconButton}" Content="&#xE921;" FontSize="10"
-                                ToolTip="Simge durumuna küçült" Click="Minimize_Click" />
+                                ToolTip="{l:T WindowMinimize}" Click="Minimize_Click" />
                         <Button Style="{StaticResource CloseButton}" Content="&#xE8BB;" FontSize="10"
-                                ToolTip="Kapat" Click="Close_Click" />
+                                ToolTip="{l:T WindowClose}" Click="Close_Click" />
                     </StackPanel>
                 </Grid>
 
@@ -172,25 +187,30 @@
                                     <Rectangle Height="2" Width="18" RadiusX="1" RadiusY="1" VerticalAlignment="Bottom"
                                                Margin="0,0,0,4" Fill="{StaticResource Brush.AccentHorizontal}" />
                                 </Border>
-                                <RadioButton Style="{StaticResource SegmentButton}" Content="Tüm Uygulamalar"
+                                <RadioButton Style="{StaticResource SegmentButton}" Content="{l:T ModeAll}"
                                              IsChecked="{Binding IsDivertMode}"
-                                             ToolTip="Tüm uygulamaların trafiği korunur (WinDivert)" />
-                                <RadioButton Grid.Column="1" Style="{StaticResource SegmentButton}" Content="Sadece Tarayıcı"
+                                             ToolTip="{l:T ModeAllToolTip}" />
+                                <RadioButton Grid.Column="1" Style="{StaticResource SegmentButton}" Content="{l:T ModeBrowser}"
                                              IsChecked="{Binding IsProxyMode}"
-                                             ToolTip="Yalnızca tarayıcılar, yerel proxy üzerinden" />
+                                             ToolTip="{l:T ModeBrowserToolTip}" />
                             </Grid>
                         </Border>
 
                         <!-- profile selector -->
                         <Border x:Name="ProfileCard" Style="{StaticResource Card}" Margin="0,12,0,0">
                             <StackPanel>
+                                <Grid>
                                 <Button Style="{StaticResource CardHeaderButton}" Click="ProfileHeader_Click">
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
+                                        <!-- room for the auto-find chip, which floats above this button (no nested buttons) -->
+                                        <Border Grid.Column="2" Width="{Binding ActualWidth, ElementName=AutoFindChip}"
+                                                Margin="0,0,10,0" IsHitTestVisible="False" />
                                         <Border Width="34" Height="34" CornerRadius="10" Background="{StaticResource Brush.MintSoftBg}">
                                             <Viewbox Width="16" Height="16">
                                                 <Canvas Width="24" Height="24">
@@ -200,11 +220,17 @@
                                             </Viewbox>
                                         </Border>
                                         <StackPanel Grid.Column="1" Margin="12,0,8,0" VerticalAlignment="Center">
-                                            <TextBlock Text="Profil" FontSize="11.5" Foreground="{StaticResource Brush.TextTertiary}" />
-                                            <TextBlock Text="{Binding SelectedProfile.Name}" FontSize="14" FontWeight="SemiBold"
-                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{l:T ProfileLabel}" FontSize="11.5" Foreground="{StaticResource Brush.TextTertiary}" />
+                                            <TextBlock FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis">
+                                                <TextBlock.Text>
+                                                    <MultiBinding Converter="{StaticResource LiveText}">
+                                                        <Binding Path="SelectedProfile" />
+                                                        <Binding Path="Version" Source="{x:Static l:Loc.Instance}" />
+                                                    </MultiBinding>
+                                                </TextBlock.Text>
+                                            </TextBlock>
                                         </StackPanel>
-                                        <TextBlock Grid.Column="2" Style="{StaticResource IconGlyph}" Text="&#xE70D;" FontSize="11"
+                                        <TextBlock x:Name="ProfileChevron" Grid.Column="3" Style="{StaticResource IconGlyph}" Text="&#xE70D;" FontSize="11"
                                                    Foreground="{StaticResource Brush.TextSecondary}" Margin="0,0,4,0"
                                                    RenderTransformOrigin="0.5,0.5">
                                             <TextBlock.RenderTransform>
@@ -213,9 +239,39 @@
                                         </TextBlock>
                                     </Grid>
                                 </Button>
+                                <Button x:Name="AutoFindChip" Style="{StaticResource AccentChipButton}"
+                                        HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,42,0"
+                                        Content="{l:T AutoFindChip}"
+                                        IsEnabled="{Binding CanAutoFind}" ToolTip="{Binding AutoFindToolTip}"
+                                        Click="AutoFindEntry_Click" />
+                                </Grid>
                                 <c:RevealPanel x:Name="ProfileListHost" ClipToBounds="True">
                                     <StackPanel x:Name="ProfileListInner" VerticalAlignment="Top" Margin="8,0,8,8">
-                                        <Rectangle Style="{StaticResource Divider}" Margin="8,0,8,6" />
+                                        <Rectangle Style="{StaticResource Divider}" Margin="8,0,8,8" />
+                                        <Button x:Name="AutoFindEntry" Style="{StaticResource PrimaryListActionButton}"
+                                                IsEnabled="{Binding CanAutoFind}" ToolTip="{Binding AutoFindToolTip}"
+                                                Click="AutoFindEntry_Click">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <Border Width="32" Height="32" CornerRadius="10" Background="#262EE6A6" VerticalAlignment="Center">
+                                                    <TextBlock Text="✦" FontSize="15" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                               Margin="0,0,0,1" Foreground="{StaticResource Brush.Accent}" />
+                                                </Border>
+                                                <StackPanel Grid.Column="1" Margin="11,0,8,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="{l:T AutoFindPrimaryTitle}" FontSize="13.5" FontWeight="SemiBold" />
+                                                    <TextBlock Text="{l:T AutoFindPrimaryHint}" FontSize="12"
+                                                               Margin="0,2,0,0" Foreground="{StaticResource Brush.TextSecondary}" TextWrapping="Wrap" />
+                                                </StackPanel>
+                                                <TextBlock Grid.Column="2" Style="{StaticResource IconGlyph}" Text="&#xE76C;" FontSize="11"
+                                                           Foreground="{StaticResource Brush.Mint}" Margin="0,0,2,0" />
+                                            </Grid>
+                                        </Button>
+                                        <TextBlock Style="{StaticResource Caption}" Text="{l:T ProfilesCaption}"
+                                                   FontSize="10.5" Margin="12,14,0,2" />
                                         <ListBox x:Name="ProfileList" Style="{StaticResource PlainList}"
                                                  ItemContainerStyle="{StaticResource ProfileItem}"
                                                  ItemsSource="{Binding Profiles}"
@@ -224,11 +280,36 @@
                                             <ListBox.ItemTemplate>
                                                 <DataTemplate>
                                                     <StackPanel>
-                                                        <TextBlock Text="{Binding Name}" FontSize="13.5" FontWeight="SemiBold"
-                                                                   Foreground="{StaticResource Brush.TextPrimary}" />
-                                                        <TextBlock Text="{Binding Description}" FontSize="12" Margin="0,2,0,0"
-                                                                   Foreground="{StaticResource Brush.TextSecondary}" TextWrapping="Wrap" />
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock FontSize="13.5" FontWeight="SemiBold" Foreground="{StaticResource Brush.TextPrimary}">
+                                                                <TextBlock.Text>
+                                                                    <MultiBinding Converter="{StaticResource LiveText}">
+                                                                        <Binding />
+                                                                        <Binding Path="Version" Source="{x:Static l:Loc.Instance}" />
+                                                                    </MultiBinding>
+                                                                </TextBlock.Text>
+                                                            </TextBlock>
+                                                            <Border x:Name="AutoBadge" Margin="8,1,0,0" Padding="6,1,6,2" CornerRadius="6"
+                                                                    VerticalAlignment="Center" Visibility="Collapsed"
+                                                                    Background="{StaticResource Brush.MintSoftBg}" BorderBrush="#4D2EE6A6" BorderThickness="1">
+                                                                <TextBlock Text="{l:T ProfileAutoBadge}" FontSize="10.5" FontWeight="SemiBold"
+                                                                           Foreground="{StaticResource Brush.Mint}" />
+                                                            </Border>
+                                                        </StackPanel>
+                                                        <TextBlock FontSize="12" Margin="0,2,0,0" Foreground="{StaticResource Brush.TextSecondary}" TextWrapping="Wrap">
+                                                            <TextBlock.Text>
+                                                                <MultiBinding Converter="{StaticResource LiveText}" ConverterParameter="desc">
+                                                                    <Binding />
+                                                                    <Binding Path="Version" Source="{x:Static l:Loc.Instance}" />
+                                                                </MultiBinding>
+                                                            </TextBlock.Text>
+                                                        </TextBlock>
                                                     </StackPanel>
+                                                    <DataTemplate.Triggers>
+                                                        <DataTrigger Binding="{Binding Id}" Value="auto">
+                                                            <Setter TargetName="AutoBadge" Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                    </DataTemplate.Triggers>
                                                 </DataTemplate>
                                             </ListBox.ItemTemplate>
                                         </ListBox>
@@ -250,14 +331,14 @@
                                 <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE783;" FontSize="16"
                                            Foreground="{StaticResource Brush.Red}" VerticalAlignment="Top" Margin="0,2,0,0" />
                                 <StackPanel Grid.Column="1" Margin="10,0,10,0">
-                                    <TextBlock Text="Bağlantı kurulamadı" FontWeight="SemiBold" FontSize="13"
+                                    <TextBlock Text="{l:T ErrorTitle}" FontWeight="SemiBold" FontSize="13"
                                                Foreground="{StaticResource Brush.Red}" />
                                     <TextBlock Text="{Binding ErrorMessage}" FontSize="12" Margin="0,3,0,0"
                                                Foreground="{StaticResource Brush.TextSecondary}" TextWrapping="Wrap"
                                                MaxHeight="50" TextTrimming="CharacterEllipsis"
                                                ToolTip="{Binding ErrorMessage}" />
                                 </StackPanel>
-                                <Button Grid.Column="2" Style="{StaticResource DangerButton}" Content="Tekrar dene"
+                                <Button Grid.Column="2" Style="{StaticResource DangerButton}" Content="{l:T ErrorRetry}"
                                         Command="{Binding RetryCommand}" VerticalAlignment="Center" />
                             </Grid>
                         </Border>
@@ -286,7 +367,7 @@
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE8AB;" FontSize="12" Foreground="{StaticResource Brush.Mint}" />
-                                        <TextBlock Style="{StaticResource StatLabel}" Text="Paket" />
+                                        <TextBlock Style="{StaticResource StatLabel}" Text="{l:T StatPackets}" />
                                     </StackPanel>
                                     <c:StableSlot><c:AnimatedNumber Style="{StaticResource StatValue}" Value="{Binding Packets}" /></c:StableSlot>
                                 </StackPanel>
@@ -295,7 +376,7 @@
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE71B;" FontSize="12" Foreground="{StaticResource Brush.Cyan}" />
-                                        <TextBlock Style="{StaticResource StatLabel}" Text="Bağlantı" />
+                                        <TextBlock Style="{StaticResource StatLabel}" Text="{l:T StatConnections}" />
                                     </StackPanel>
                                     <c:StableSlot><c:AnimatedNumber Style="{StaticResource StatValue}" Value="{Binding Connections}" /></c:StableSlot>
                                 </StackPanel>
@@ -304,7 +385,7 @@
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE774;" FontSize="12" Foreground="{StaticResource Brush.Mint}" />
-                                        <TextBlock Style="{StaticResource StatLabel}" Text="DNS" />
+                                        <TextBlock Style="{StaticResource StatLabel}" Text="{l:T StatDns}" />
                                     </StackPanel>
                                     <c:StableSlot><c:AnimatedNumber Style="{StaticResource StatValue}" Value="{Binding DnsQueries}" /></c:StableSlot>
                                 </StackPanel>
@@ -316,9 +397,49 @@
                             <Button Style="{StaticResource GhostButton}" HorizontalAlignment="Left" Click="OpenLogs_Click">
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE8FD;" FontSize="12" />
-                                    <TextBlock Text="Kayıtlar" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="{l:T Logs}" Margin="7,0,0,0" VerticalAlignment="Center" />
                                 </StackPanel>
                             </Button>
+                            <!-- periodic health check: subtle "Son kontrol: 2 dk önce ✓" -->
+                            <StackPanel x:Name="HealthStatusLabel" Orientation="Horizontal" HorizontalAlignment="Center"
+                                        VerticalAlignment="Center" Background="Transparent" ToolTip="{Binding HealthToolTip}"
+                                        Visibility="{Binding ShowHealthStatus, Converter={StaticResource BoolVis}}">
+                                <Ellipse x:Name="HealthDot" Width="6" Height="6" VerticalAlignment="Center">
+                                    <Ellipse.Style>
+                                        <Style TargetType="Ellipse">
+                                            <Setter Property="Fill" Value="{StaticResource Brush.Mint}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HealthStatus}" Value="Blocked">
+                                                    <Setter Property="Fill" Value="{StaticResource Brush.Amber}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding HealthStatus}" Value="Offline">
+                                                    <Setter Property="Fill" Value="{StaticResource Brush.TextTertiary}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Ellipse.Style>
+                                </Ellipse>
+                                <TextBlock Text="{Binding HealthStatusText}" Margin="6,0,0,0" FontSize="11"
+                                           Foreground="{StaticResource Brush.TextTertiary}" VerticalAlignment="Center" />
+                                <TextBlock Margin="4,0,0,0" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text" Value="✓" />
+                                            <Setter Property="Foreground" Value="{StaticResource Brush.Mint}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HealthStatus}" Value="Blocked">
+                                                    <Setter Property="Text" Value="!" />
+                                                    <Setter Property="Foreground" Value="{StaticResource Brush.Amber}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding HealthStatus}" Value="Offline">
+                                                    <Setter Property="Text" Value="–" />
+                                                    <Setter Property="Foreground" Value="{StaticResource Brush.TextTertiary}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
                             <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="11.5"
                                        Foreground="{StaticResource Brush.TextTertiary}">
                                 <Run Text="v" /><Run Text="{Binding AppVersion, Mode=OneWay}" />
@@ -326,6 +447,116 @@
                         </Grid>
                     </StackPanel>
                 </ScrollViewer>
+
+                <!-- ===== floating notices (first-run prompt, health warning, toast) =====
+                     Shown/hidden once via Visibility; entrance/exit animate RenderTransform + Opacity only. -->
+                <StackPanel x:Name="NoticeHost" Grid.Row="1" VerticalAlignment="Bottom" Margin="14,0,14,14">
+
+                    <!-- first run -->
+                    <Border x:Name="FirstRunCard" Style="{StaticResource NoticeCard}" BorderBrush="#4D2EE6A6" Padding="16,15,16,16">
+                        <Border.RenderTransform>
+                            <TranslateTransform />
+                        </Border.RenderTransform>
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border Width="38" Height="38" CornerRadius="12" Background="#1F2EE6A6" VerticalAlignment="Top"
+                                        RenderTransformOrigin="0.5,0.5">
+                                    <Border.RenderTransform>
+                                        <ScaleTransform x:Name="FirstRunIconScale" />
+                                    </Border.RenderTransform>
+                                    <TextBlock Text="✦" FontSize="18" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                               Margin="0,0,0,1" Foreground="{StaticResource Brush.Accent}" />
+                                </Border>
+                                <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                    <TextBlock Text="{l:T FirstRunTitle}" FontFamily="{StaticResource Font.Display}"
+                                               FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <TextBlock Text="{l:T FirstRunText}" FontSize="12" Margin="0,4,0,0" LineHeight="17"
+                                               Foreground="{StaticResource Brush.TextSecondary}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Grid>
+                            <Grid Margin="0,14,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="10" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Button Style="{StaticResource GhostButton}" Padding="10,9" Content="{l:T FirstRunManual}"
+                                        Click="FirstRunManual_Click" />
+                                <Button Grid.Column="2" Style="{StaticResource PrimaryButton}" Click="FirstRunAuto_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="✦" FontSize="12.5" VerticalAlignment="Center" />
+                                        <TextBlock Text="{l:T FirstRunAuto}" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- health warning -->
+                    <Border x:Name="HealthWarnCard" Style="{StaticResource NoticeCard}" BorderBrush="#4DF5B544">
+                        <Border.RenderTransform>
+                            <TranslateTransform />
+                        </Border.RenderTransform>
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Border Width="34" Height="34" CornerRadius="10" Background="#1FF5B544" VerticalAlignment="Top">
+                                    <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE7BA;" FontSize="15" Margin="0,0,0,1"
+                                               HorizontalAlignment="Center" Foreground="{StaticResource Brush.Amber}" />
+                                </Border>
+                                <StackPanel Grid.Column="1" Margin="12,0,4,0">
+                                    <TextBlock Text="{l:T HealthWarnTitle}" FontSize="13.5" FontWeight="SemiBold"
+                                               Foreground="{StaticResource Brush.Amber}" TextWrapping="Wrap" />
+                                    <TextBlock Text="{l:T HealthWarnText}" FontSize="12" Margin="0,3,0,0" LineHeight="17"
+                                               Foreground="{StaticResource Brush.TextSecondary}" TextWrapping="Wrap" />
+                                </StackPanel>
+                                <Button Grid.Column="2" Style="{StaticResource IconButton}" Content="&#xE8BB;" FontSize="9"
+                                        Width="26" Height="26" Margin="0,-4,-6,0" VerticalAlignment="Top"
+                                        ToolTip="{l:T HealthWarnDismiss}" Click="HealthDismiss_Click" />
+                            </Grid>
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="10" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Button Style="{StaticResource GhostButton}" Padding="10,8" Click="HealthReconnect_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE72C;" FontSize="11.5" />
+                                        <TextBlock Text="{l:T HealthWarnReconnect}" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Grid.Column="2" Style="{StaticResource PrimaryButton}" Padding="10,8"
+                                        IsEnabled="{Binding CanAutoFind}" ToolTip="{Binding AutoFindToolTip}"
+                                        ToolTipService.ShowOnDisabled="True" Click="HealthAutoFind_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="✦" FontSize="12.5" VerticalAlignment="Center" />
+                                        <TextBlock Text="{l:T HealthWarnAutoFind}" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- toast -->
+                    <Border x:Name="Toast" HorizontalAlignment="Center" Height="34" CornerRadius="17" Padding="16,0"
+                            Margin="0,10,0,0" Background="#FF14201C" BorderBrush="#592EE6A6" BorderThickness="1"
+                            Visibility="Collapsed" IsHitTestVisible="False">
+                        <Border.RenderTransform>
+                            <TranslateTransform />
+                        </Border.RenderTransform>
+                        <TextBlock x:Name="ToastText" FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center"
+                                   Foreground="{StaticResource Brush.Mint}" />
+                    </Border>
+                </StackPanel>
             </Grid>
 
             <!-- ================= SETTINGS PAGE ================= -->
@@ -341,62 +572,62 @@
                 <Grid Background="Transparent" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
                     <StackPanel Orientation="Horizontal" Margin="10,0,0,0" VerticalAlignment="Center">
                         <Button Style="{StaticResource IconButton}" Content="&#xE72B;" FontSize="13"
-                                ToolTip="Geri" Click="CloseSettings_Click" />
-                        <TextBlock Text="Ayarlar" Margin="6,0,0,1" FontFamily="{StaticResource Font.Display}"
+                                ToolTip="{l:T WindowBack}" Click="CloseSettings_Click" />
+                        <TextBlock Text="{l:T WindowSettings}" Margin="6,0,0,1" FontFamily="{StaticResource Font.Display}"
                                    FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0">
                         <Button Style="{StaticResource IconButton}" Content="&#xE921;" FontSize="10"
-                                ToolTip="Simge durumuna küçült" Click="Minimize_Click" />
+                                ToolTip="{l:T WindowMinimize}" Click="Minimize_Click" />
                         <Button Style="{StaticResource CloseButton}" Content="&#xE8BB;" FontSize="10"
-                                ToolTip="Kapat" Click="Close_Click" />
+                                ToolTip="{l:T WindowClose}" Click="Close_Click" />
                     </StackPanel>
                 </Grid>
 
                 <ScrollViewer Grid.Row="1" Focusable="False" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel Margin="20,6,20,22">
 
-                        <TextBlock Style="{StaticResource Caption}" Text="GENEL" />
+                        <TextBlock Style="{StaticResource Caption}" Text="{l:T SettingsGeneral}" />
                         <Border Style="{StaticResource Card}" Padding="16,2">
                             <StackPanel>
                                 <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding StartWithWindows}" Margin="0,12">
                                     <StackPanel>
-                                        <TextBlock Style="{StaticResource SettingTitle}" Text="Windows ile başlat" />
-                                        <TextBlock Style="{StaticResource SettingHint}" Text="Oturum açıldığında tepside sessizce başlar" />
+                                        <TextBlock Style="{StaticResource SettingTitle}" Text="{l:T SettingStartWithWindows}" />
+                                        <TextBlock Style="{StaticResource SettingHint}" Text="{l:T SettingStartWithWindowsHint}" />
                                     </StackPanel>
                                 </CheckBox>
                                 <Rectangle Style="{StaticResource Divider}" />
                                 <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding StartMinimized}" Margin="0,12">
                                     <StackPanel>
-                                        <TextBlock Style="{StaticResource SettingTitle}" Text="Simge durumunda başlat" />
-                                        <TextBlock Style="{StaticResource SettingHint}" Text="Açılışta pencere yerine yalnızca tepsi simgesi" />
+                                        <TextBlock Style="{StaticResource SettingTitle}" Text="{l:T SettingStartMinimized}" />
+                                        <TextBlock Style="{StaticResource SettingHint}" Text="{l:T SettingStartMinimizedHint}" />
                                     </StackPanel>
                                 </CheckBox>
                                 <Rectangle Style="{StaticResource Divider}" />
                                 <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding AutoConnectOnLaunch}" Margin="0,12">
                                     <StackPanel>
-                                        <TextBlock Style="{StaticResource SettingTitle}" Text="Açılışta otomatik bağlan" />
-                                        <TextBlock Style="{StaticResource SettingHint}" Text="Uygulama açılır açılmaz korumayı başlatır" />
+                                        <TextBlock Style="{StaticResource SettingTitle}" Text="{l:T SettingAutoConnect}" />
+                                        <TextBlock Style="{StaticResource SettingHint}" Text="{l:T SettingAutoConnectHint}" />
                                     </StackPanel>
                                 </CheckBox>
                                 <Rectangle Style="{StaticResource Divider}" />
                                 <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding MinimizeToTray}" Margin="0,12">
                                     <StackPanel>
-                                        <TextBlock Style="{StaticResource SettingTitle}" Text="Kapatınca tepsiye küçült" />
-                                        <TextBlock Style="{StaticResource SettingHint}" Text="Pencereyi kapatmak korumayı sonlandırmaz" />
+                                        <TextBlock Style="{StaticResource SettingTitle}" Text="{l:T SettingMinimizeToTray}" />
+                                        <TextBlock Style="{StaticResource SettingHint}" Text="{l:T SettingMinimizeToTrayHint}" />
                                     </StackPanel>
                                 </CheckBox>
                             </StackPanel>
                         </Border>
 
-                        <TextBlock Style="{StaticResource Caption}" Text="DNS SAĞLAYICISI (DoH)" Margin="4,22,0,8" />
+                        <!-- UI language (live switch; extra languages come from %AppData%\LiDPI\lang) -->
+                        <TextBlock x:Name="LanguageCaption" Style="{StaticResource Caption}"
+                                   Text="{l:T SettingsLanguage}" Margin="4,22,0,8" />
                         <Border Style="{StaticResource Card}" Padding="16,14,8,8">
                             <StackPanel>
-                                <TextBlock Style="{StaticResource SettingHint}" Margin="0,0,8,12"
-                                           Text="DNS sorguları şifreli olarak bu sağlayıcı üzerinden çözülür. Değişiklik bağlıyken hemen uygulanır." />
+                                <TextBlock Style="{StaticResource SettingHint}" Margin="0,0,8,12" Text="{l:T SettingLanguageHint}" />
                                 <ListBox Style="{StaticResource PlainList}" ItemContainerStyle="{StaticResource ChipItem}"
-                                         ItemsSource="{Binding DohProviderList}" SelectedItem="{Binding SelectedDoh}"
-                                         DisplayMemberPath="Name">
+                                         ItemsSource="{Binding Languages}" SelectedItem="{Binding SelectedLanguage}">
                                     <ListBox.ItemsPanel>
                                         <ItemsPanelTemplate>
                                             <WrapPanel />
@@ -406,7 +637,169 @@
                             </StackPanel>
                         </Border>
 
-                        <TextBlock Style="{StaticResource Caption}" Text="HAKKINDA" Margin="4,22,0,8" />
+                        <TextBlock x:Name="ReliabilityCaption" Style="{StaticResource Caption}"
+                                   Text="{l:T SettingsReliability}" Margin="4,22,0,8" />
+                        <Border Style="{StaticResource Card}" Padding="16,2">
+                            <StackPanel>
+                                <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding AutoReconnect}" Margin="0,12">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource SettingTitle}" Text="{l:T SettingAutoReconnect}" TextWrapping="Wrap" />
+                                        <TextBlock Style="{StaticResource SettingHint}" Text="{l:T SettingAutoReconnectHint}" />
+                                    </StackPanel>
+                                </CheckBox>
+
+                                <Rectangle Style="{StaticResource Divider}" />
+                                <StackPanel Margin="0,12,0,4">
+                                    <TextBlock Style="{StaticResource SettingTitle}" Text="{l:T SettingHealth}" />
+                                    <TextBlock Style="{StaticResource SettingHint}" Text="{l:T SettingHealthHint}" />
+                                    <ListBox Style="{StaticResource PlainList}" ItemContainerStyle="{StaticResource ChipItem}" Margin="0,10,0,0"
+                                             ItemsSource="{Binding HealthOptions}" SelectedItem="{Binding SelectedHealthOption}"
+                                             ItemTemplate="{StaticResource LiveTextItem}">
+                                        <ListBox.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel />
+                                            </ItemsPanelTemplate>
+                                        </ListBox.ItemsPanel>
+                                    </ListBox>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Style="{StaticResource Caption}" Text="{l:T SettingsDns}" Margin="4,22,0,8" />
+                        <Border Style="{StaticResource Card}" Padding="16,14,8,8">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SettingHint}" Margin="0,0,8,12"
+                                           Text="{l:T SettingDnsHint}" />
+                                <ListBox Style="{StaticResource PlainList}" ItemContainerStyle="{StaticResource ChipItem}"
+                                         ItemsSource="{Binding DohProviderList}" SelectedItem="{Binding SelectedDoh}"
+                                         ItemTemplate="{StaticResource LiveTextItem}">
+                                    <ListBox.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ListBox.ItemsPanel>
+                                </ListBox>
+
+                                <!-- custom provider editor ("Özel…") -->
+                                <StackPanel x:Name="CustomDohPanel" Margin="0,4,8,8"
+                                            Visibility="{Binding IsCustomDohSelected, Converter={StaticResource BoolVis}}">
+                                    <TextBlock Style="{StaticResource SettingHint}" Text="{l:T DohCustomUrlLabel}" Margin="2,0,0,5" />
+                                    <TextBox Style="{StaticResource InputBox}" Tag="{l:T DohCustomUrlPlaceholder}"
+                                             Text="{Binding CustomDohUrl, UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBlock Style="{StaticResource SettingHint}" Text="{l:T DohCustomBootstrapLabel}" Margin="2,10,0,5" />
+                                    <TextBox Style="{StaticResource InputBox}" Tag="{l:T DohCustomBootstrapPlaceholder}"
+                                             Text="{Binding CustomDohBootstrap, UpdateSourceTrigger=PropertyChanged}" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                        <Button Style="{StaticResource PrimaryButton}" Padding="14,7" FontSize="12.5"
+                                                Content="{l:T DohCustomSave}" Click="CustomDohSave_Click" />
+                                        <Button Style="{StaticResource GhostButton}" Padding="12,7" Margin="8,0,0,0"
+                                                Content="{l:T DohCustomTest}" Click="CustomDohTest_Click"
+                                                IsEnabled="{Binding CanTestCustomDoh}" />
+                                    </StackPanel>
+                                    <Grid Margin="2,8,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Path Style="{StaticResource Spinner}" Margin="0,0,7,0"
+                                              Visibility="{Binding CustomDohTesting, Converter={StaticResource BoolVis}}">
+                                            <Path.RenderTransform>
+                                                <RotateTransform />
+                                            </Path.RenderTransform>
+                                        </Path>
+                                        <TextBlock Grid.Column="1" FontSize="12" TextWrapping="Wrap" LineHeight="17"
+                                                   Text="{Binding CustomDohStatus}"
+                                                   Foreground="{Binding CustomDohStatusKind, Converter={StaticResource StatusBrush}}" />
+                                    </Grid>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- test sites (auto-find + health check) -->
+                        <TextBlock x:Name="TestSitesCaption" Style="{StaticResource Caption}"
+                                   Text="{l:T SettingsTestSites}" Margin="4,22,0,8" />
+                        <Border Style="{StaticResource Card}" Padding="16,14,16,14">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SettingHint}" Margin="0,0,0,10" Text="{l:T TestSitesHint}" />
+                                <ItemsControl ItemsSource="{Binding TestSites}" Focusable="False">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,0,0,6">
+                                                <Border CornerRadius="10" Background="{StaticResource Brush.Surface}"
+                                                        BorderBrush="{StaticResource Brush.CardBorder}" BorderThickness="1" />
+                                                <Grid Margin="12,5,4,5">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding Host}" FontSize="12.5" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{Binding Path}" FontSize="11" Foreground="{StaticResource Brush.TextTertiary}"
+                                                                   TextTrimming="CharacterEllipsis">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding Path}" Value="">
+                                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                    <Button Grid.Column="1" Style="{StaticResource IconButton}" Width="28" Height="26"
+                                                            Content="&#xE711;" FontSize="10" ToolTip="{l:T TestSitesRemove}"
+                                                            Click="TestSiteRemove_Click"
+                                                            IsEnabled="{Binding DataContext.CanRemoveTestSite, RelativeSource={RelativeSource AncestorType=ItemsControl}}" />
+                                                </Grid>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <Grid Margin="0,4,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="NewTestSiteBox" Style="{StaticResource InputBox}" Tag="{l:T TestSitesPlaceholder}"
+                                             Text="{Binding NewTestSite, UpdateSourceTrigger=PropertyChanged}" KeyDown="NewTestSite_KeyDown" />
+                                    <Button Grid.Column="1" Style="{StaticResource GhostButton}" Padding="14,0" Height="34" Margin="8,0,0,0"
+                                            Content="{l:T TestSitesAdd}" Click="TestSiteAdd_Click" />
+                                </Grid>
+                                <TextBlock FontSize="12" Margin="2,6,0,0" TextWrapping="Wrap" Foreground="{StaticResource Brush.Red}"
+                                           Text="{Binding TestSiteError}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding TestSiteError}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                                <Button Style="{StaticResource TextLinkButton}" HorizontalAlignment="Left" Margin="0,10,0,0"
+                                        Content="{l:T TestSitesReset}" Click="TestSitesReset_Click"
+                                        IsEnabled="{Binding CanResetTestSites}" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- privacy -->
+                        <TextBlock x:Name="PrivacyCaption" Style="{StaticResource Caption}" Text="{l:T SettingsPrivacy}" Margin="4,22,0,8" />
+                        <Border Style="{StaticResource Card}" Padding="16,14">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE72E;" FontSize="14" VerticalAlignment="Top"
+                                           Margin="0,1,0,0" Foreground="{StaticResource Brush.Mint}" />
+                                <TextBlock Grid.Column="1" Margin="11,0,0,0" FontSize="12" TextWrapping="Wrap" LineHeight="17"
+                                           Foreground="{StaticResource Brush.TextSecondary}" Text="{l:T PrivacyText}" />
+                            </Grid>
+                        </Border>
+
+                        <TextBlock Style="{StaticResource Caption}" Text="{l:T SettingsAbout}" Margin="4,22,0,8" />
                         <Border Style="{StaticResource Card}" Padding="16">
                             <StackPanel>
                                 <Grid>
@@ -428,19 +821,65 @@
                                     <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
                                         <TextBlock Text="LiDPI" FontFamily="{StaticResource Font.Display}" FontSize="15" FontWeight="SemiBold" />
                                         <TextBlock FontSize="12" Foreground="{StaticResource Brush.TextSecondary}">
-                                            <Run Text="Sürüm " /><Run Text="{Binding AppVersion, Mode=OneWay}" />
+                                            <Run Text="{Binding AboutVersionText, Mode=OneWay}" />
                                         </TextBlock>
                                     </StackPanel>
                                 </Grid>
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Button x:Name="UpdateCheckButton" Style="{StaticResource GhostButton}" Padding="12,7"
+                                            Click="UpdateCheck_Click" IsEnabled="{Binding CanCheckUpdates}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE895;" FontSize="11.5" />
+                                            <TextBlock Text="{l:T UpdateCheckButton}" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Grid Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Path Style="{StaticResource Spinner}" Margin="0,0,7,0"
+                                              Visibility="{Binding UpdateCheckBusy, Converter={StaticResource BoolVis}}">
+                                            <Path.RenderTransform>
+                                                <RotateTransform />
+                                            </Path.RenderTransform>
+                                        </Path>
+                                        <TextBlock x:Name="UpdateCheckStatus" Grid.Column="1" FontSize="11.5" TextWrapping="Wrap" LineHeight="15"
+                                                   VerticalAlignment="Center" Text="{Binding UpdateCheckText}"
+                                                   Foreground="{Binding UpdateCheckKind, Converter={StaticResource StatusBrush}}" />
+                                    </Grid>
+                                </Grid>
                                 <TextBlock Style="{StaticResource SettingHint}" Margin="0,12,0,0"
-                                           Text="DPI tabanlı erişim engellerini aşmak için hafif ve açık bir araç." />
+                                           Text="{l:T AboutText}" />
                                 <TextBlock Margin="0,8,0,0" FontSize="12.5">
-                                    <Hyperlink Command="{Binding OpenUrlCommand}" CommandParameter="https://github.com/LiebertDev/LiDPI">GitHub'da görüntüle</Hyperlink>
+                                    <Hyperlink Command="{Binding OpenUrlCommand}" CommandParameter="https://github.com/LiebertDev/LiDPI"><Run Text="{l:T AboutGitHub}" /></Hyperlink>
                                 </TextBlock>
                                 <Rectangle Style="{StaticResource Divider}" Margin="0,14,0,12" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center" Margin="0,0,10,0">
+                                        <TextBlock Style="{StaticResource SettingTitle}" Text="{l:T DiagButton}" />
+                                        <TextBlock Style="{StaticResource SettingHint}" Text="{l:T DiagHint}" />
+                                    </StackPanel>
+                                    <Button x:Name="DiagButton" Grid.Column="1" Style="{StaticResource GhostButton}" Padding="11,7"
+                                            VerticalAlignment="Center" ToolTip="{l:T DiagButton}" Click="DiagReport_Click">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE9F9;" FontSize="11.5" />
+                                            <TextBlock Text="{l:T DiagButtonShort}" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+                                <Rectangle Style="{StaticResource Divider}" Margin="0,14,0,12" />
                                 <TextBlock FontSize="11.5" Foreground="{StaticResource Brush.TextTertiary}" TextWrapping="Wrap" LineHeight="17">
-                                    <Run Text="Bu uygulama, LGPLv3 / GPLv2 lisanslı WinDivert (© basil00) sürücüsünü değiştirilmemiş haliyle kullanır. Kaynak kodu:" />
-                                    <Hyperlink Command="{Binding OpenUrlCommand}" CommandParameter="https://github.com/basil00/WinDivert">github.com/basil00/WinDivert</Hyperlink><Run Text=". Ayrıntılar için THIRD_PARTY_NOTICES dosyasına bakın. LiDPI olduğu gibi, hiçbir garanti olmaksızın sunulur." />
+                                    <Run Text="{l:T AboutLicenseBefore}" />
+                                    <Hyperlink Command="{Binding OpenUrlCommand}" CommandParameter="https://github.com/basil00/WinDivert">github.com/basil00/WinDivert</Hyperlink><Run Text="{l:T AboutLicenseAfter}" />
                                 </TextBlock>
                             </StackPanel>
                         </Border>
@@ -465,17 +904,24 @@
                         </Grid.RowDefinitions>
                         <Border Width="36" Height="4" CornerRadius="2" Background="#FF2C2C37" HorizontalAlignment="Center" />
                         <Grid Grid.Row="1" Margin="2,10,0,12">
-                            <TextBlock Text="Kayıtlar" FontFamily="{StaticResource Font.Display}" FontSize="15"
+                            <TextBlock Text="{l:T Logs}" FontFamily="{StaticResource Font.Display}" FontSize="15"
                                        FontWeight="SemiBold" VerticalAlignment="Center" />
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Style="{StaticResource GhostButton}" Padding="10,5" Margin="0,0,6,0"
+                                        ToolTip="{l:T DiagButton}" Click="DiagReport_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE9F9;" FontSize="11.5" />
+                                        <TextBlock Text="{l:T DiagButtonShort}" Margin="6,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
                                 <Button Style="{StaticResource GhostButton}" Command="{Binding CopyLogsCommand}" Padding="10,5" Margin="0,0,6,0">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE8C8;" FontSize="11.5" />
-                                        <TextBlock Text="Kopyala" Margin="6,0,0,0" VerticalAlignment="Center" />
+                                        <TextBlock Text="{l:T LogsCopy}" Margin="6,0,0,0" VerticalAlignment="Center" />
                                     </StackPanel>
                                 </Button>
                                 <Button Style="{StaticResource IconButton}" Content="&#xE8BB;" FontSize="10"
-                                        ToolTip="Kapat" Click="CloseLogs_Click" />
+                                        ToolTip="{l:T WindowClose}" Click="CloseLogs_Click" />
                             </StackPanel>
                         </Grid>
                         <Border Grid.Row="2" Background="#FF0B0B0F" CornerRadius="12" BorderBrush="{StaticResource Brush.CardBorder}"
@@ -494,7 +940,7 @@
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
                                 </ListBox>
-                                <TextBlock Text="Henüz kayıt yok." HorizontalAlignment="Center" VerticalAlignment="Center"
+                                <TextBlock Text="{l:T LogsEmpty}" HorizontalAlignment="Center" VerticalAlignment="Center"
                                            FontSize="12" Foreground="{StaticResource Brush.TextTertiary}">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
@@ -509,6 +955,329 @@
                                 </TextBlock>
                             </Grid>
                         </Border>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <!-- ================= AUTO-FIND SHEET ================= -->
+            <Grid x:Name="AutoFindOverlay" Visibility="Hidden">
+                <Border x:Name="AutoFindBackdrop" Background="{StaticResource Brush.Backdrop}" Opacity="0"
+                        MouseLeftButtonDown="AutoFindBackdrop_MouseLeftButtonDown" />
+                <Border x:Name="AutoFindSheet" VerticalAlignment="Bottom" Height="566" CornerRadius="20,20,0,0"
+                        Background="#FF101016" BorderBrush="{StaticResource Brush.CardBorder}" BorderThickness="1,1,1,0">
+                    <Border.RenderTransform>
+                        <TranslateTransform x:Name="AutoFindSheetY" Y="566" />
+                    </Border.RenderTransform>
+                    <Grid Margin="18,8,18,18">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Border Width="36" Height="4" CornerRadius="2" Background="#FF2C2C37" HorizontalAlignment="Center" />
+
+                        <!-- header -->
+                        <Grid Grid.Row="1" Margin="0,12,0,14">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Width="34" Height="34" CornerRadius="10" Background="{StaticResource Brush.MintSoftBg}">
+                                <TextBlock Text="✦" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           Margin="0,0,0,1" Foreground="{StaticResource Brush.Accent}" />
+                            </Border>
+                            <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                                <TextBlock Text="{l:T AutoFindSheetTitle}" FontFamily="{StaticResource Font.Display}" FontSize="15"
+                                           FontWeight="SemiBold" />
+                                <TextBlock Text="{l:T AutoFindSheetSubtitle}" FontSize="11.5" Foreground="{StaticResource Brush.TextTertiary}" />
+                                <DockPanel Margin="0,3,0,0" LastChildFill="True">
+                                    <Button x:Name="AutoFindEditSites" DockPanel.Dock="Right" Style="{StaticResource TextLinkButton}" FontSize="11.5"
+                                            Padding="6,0,0,0" Content="{l:T AutoFindEditSites}" Click="AutoFindEditSites_Click" />
+                                    <TextBlock x:Name="AutoFindSitesLine" Text="{Binding TestSitesSummary}" FontSize="11.5"
+                                               Foreground="{StaticResource Brush.TextSecondary}" TextTrimming="CharacterEllipsis" />
+                                </DockPanel>
+                            </StackPanel>
+                        </Grid>
+
+                        <Grid Grid.Row="2">
+                            <!-- ===== running ===== -->
+                            <Grid x:Name="AutoFindRunPanel">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <Grid Margin="2,0,2,14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE946;" FontSize="13" VerticalAlignment="Top"
+                                               Margin="0,2,0,0" Foreground="{StaticResource Brush.Cyan}" />
+                                    <TextBlock Grid.Column="1" Margin="9,0,0,0" FontSize="12.5" TextWrapping="Wrap" LineHeight="18"
+                                               Foreground="{StaticResource Brush.TextSecondary}"
+                                               Text="{l:T AutoFindRunHint}" />
+                                </Grid>
+
+                                <!-- progress card -->
+                                <Border Grid.Row="1" Style="{StaticResource Card}" Padding="16,14,16,14">
+                                    <StackPanel>
+                                        <Grid>
+                                            <TextBlock Text="{l:T AutoFindTestingCaption}" FontSize="10.5" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource Brush.TextTertiary}" />
+                                            <TextBlock Text="{Binding AutoFindCounter}" HorizontalAlignment="Right" FontSize="12"
+                                                       FontWeight="SemiBold" Foreground="{StaticResource Brush.Mint}"
+                                                       Typography.NumeralAlignment="Tabular" />
+                                        </Grid>
+                                        <c:CrossfadeText Height="24" Margin="0,8,0,0" Text="{Binding AutoFindCurrent}"
+                                                         TextBrush="{StaticResource Brush.TextPrimary}"
+                                                         TextElement.FontFamily="{StaticResource Font.Display}"
+                                                         TextElement.FontSize="15.5" TextElement.FontWeight="SemiBold" />
+                                        <Grid x:Name="AutoFindTrack" Height="6" Margin="0,12,0,0" ClipToBounds="True">
+                                            <Border CornerRadius="3" Background="#FF1E1E28" />
+                                            <Border CornerRadius="3" Background="{StaticResource Brush.AccentHorizontal}"
+                                                    RenderTransformOrigin="0,0.5">
+                                                <Border.RenderTransform>
+                                                    <ScaleTransform x:Name="AutoFindBarScale" ScaleX="0" />
+                                                </Border.RenderTransform>
+                                            </Border>
+                                            <Rectangle x:Name="AutoFindShimmer" Width="90" HorizontalAlignment="Left" Opacity="0">
+                                                <Rectangle.Fill>
+                                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,0" po:Freeze="True">
+                                                        <GradientStop Color="#00FFFFFF" Offset="0" />
+                                                        <GradientStop Color="#40FFFFFF" Offset="0.5" />
+                                                        <GradientStop Color="#00FFFFFF" Offset="1" />
+                                                    </LinearGradientBrush>
+                                                </Rectangle.Fill>
+                                                <Rectangle.RenderTransform>
+                                                    <TranslateTransform x:Name="AutoFindShimmerX" X="-90" />
+                                                </Rectangle.RenderTransform>
+                                            </Rectangle>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Grid.Row="2" Style="{StaticResource Caption}" Text="{l:T AutoFindResultsCaption}" Margin="4,16,0,8" />
+
+                                <Border Grid.Row="3" Background="#FF0B0B0F" CornerRadius="12" BorderBrush="{StaticResource Brush.CardBorder}"
+                                        BorderThickness="1" Padding="12,8,6,8">
+                                    <Grid>
+                                        <ScrollViewer x:Name="AutoFindScroll" Focusable="False" VerticalScrollBarVisibility="Auto"
+                                                      HorizontalScrollBarVisibility="Disabled">
+                                            <ItemsControl ItemsSource="{Binding AutoFindRows}" Margin="0,0,6,0">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Grid Height="28" Opacity="0">
+                                                            <Grid.RenderTransform>
+                                                                <TranslateTransform Y="8" />
+                                                            </Grid.RenderTransform>
+                                                            <Grid.Triggers>
+                                                                <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                                    <BeginStoryboard>
+                                                                        <Storyboard>
+                                                                            <DoubleAnimation Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.3" />
+                                                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)"
+                                                                                             To="0" Duration="0:0:0.36" EasingFunction="{StaticResource Ease.Out}" />
+                                                                        </Storyboard>
+                                                                    </BeginStoryboard>
+                                                                </EventTrigger>
+                                                            </Grid.Triggers>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="16" />
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                                <ColumnDefinition Width="64" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <Ellipse x:Name="Dot" Width="7" Height="7" HorizontalAlignment="Left"
+                                                                     VerticalAlignment="Center" Fill="{StaticResource Brush.Red}" />
+                                                            <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="12.5" VerticalAlignment="Center"
+                                                                       TextTrimming="CharacterEllipsis" Foreground="{StaticResource Brush.TextPrimary}" />
+                                                            <TextBlock x:Name="Score" Grid.Column="2" Text="{Binding Score}" FontSize="12" Margin="8,0,0,0"
+                                                                       VerticalAlignment="Center" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular"
+                                                                       Foreground="{StaticResource Brush.TextTertiary}" />
+                                                            <TextBlock Grid.Column="3" Text="{Binding Latency}" FontSize="12" HorizontalAlignment="Right"
+                                                                       VerticalAlignment="Center" Typography.NumeralAlignment="Tabular"
+                                                                       Foreground="{StaticResource Brush.TextSecondary}" />
+                                                        </Grid>
+                                                        <DataTemplate.Triggers>
+                                                            <DataTrigger Binding="{Binding Level}" Value="2">
+                                                                <Setter TargetName="Dot" Property="Fill" Value="{StaticResource Brush.Mint}" />
+                                                                <Setter TargetName="Score" Property="Foreground" Value="{StaticResource Brush.Mint}" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding Level}" Value="1">
+                                                                <Setter TargetName="Dot" Property="Fill" Value="{StaticResource Brush.Amber}" />
+                                                                <Setter TargetName="Score" Property="Foreground" Value="{StaticResource Brush.Amber}" />
+                                                            </DataTrigger>
+                                                        </DataTemplate.Triggers>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ScrollViewer>
+                                        <TextBlock Text="{l:T AutoFindFirstResult}" HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Brush.TextTertiary}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding AutoFindRows.Count}" Value="0">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Grid>
+                                </Border>
+
+                                <Button Grid.Row="4" Margin="0,14,0,0" Padding="12,9" Click="AutoFindCancel_Click">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource GhostButton}">
+                                            <Setter Property="Content" Value="{l:T AutoFindCancel}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsAutoFindCancelling}" Value="True">
+                                                    <Setter Property="Content" Value="{l:T AutoFindCancelling}" />
+                                                    <Setter Property="IsEnabled" Value="False" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                            </Grid>
+
+                            <!-- ===== found ===== -->
+                            <Grid x:Name="AutoFindFoundPanel" Visibility="Hidden" Opacity="0">
+                                <Grid.RenderTransform>
+                                    <TranslateTransform x:Name="AutoFindFoundY" />
+                                </Grid.RenderTransform>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,0,8">
+                                    <Grid Width="84" Height="84" HorizontalAlignment="Center">
+                                        <Ellipse x:Name="FoundRing" Stroke="{StaticResource Brush.Mint}" StrokeThickness="1.5"
+                                                 Opacity="0" RenderTransformOrigin="0.5,0.5">
+                                            <Ellipse.RenderTransform>
+                                                <ScaleTransform x:Name="FoundRingScale" />
+                                            </Ellipse.RenderTransform>
+                                        </Ellipse>
+                                        <Grid x:Name="FoundBadge" RenderTransformOrigin="0.5,0.5">
+                                            <Grid.RenderTransform>
+                                                <ScaleTransform x:Name="FoundBadgeScale" />
+                                            </Grid.RenderTransform>
+                                            <Ellipse Fill="{StaticResource Brush.MintSoftBg}" Stroke="#592EE6A6" StrokeThickness="1" />
+                                            <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE73E;" FontSize="32"
+                                                       HorizontalAlignment="Center" Foreground="{StaticResource Brush.Accent}" />
+                                        </Grid>
+                                    </Grid>
+                                    <TextBlock Text="{l:T AutoFindFoundTitle}" Margin="0,16,0,0" HorizontalAlignment="Center"
+                                               FontFamily="{StaticResource Font.Display}" FontSize="20" FontWeight="SemiBold" />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                                        <TextBlock Text="{Binding WinnerName}" FontSize="14" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource Brush.Mint}" VerticalAlignment="Center" />
+                                        <Border Margin="8,1,0,0" Padding="6,1,6,2" CornerRadius="6" VerticalAlignment="Center"
+                                                Background="{StaticResource Brush.MintSoftBg}" BorderBrush="#4D2EE6A6" BorderThickness="1"
+                                                Visibility="{Binding WinnerIsCustom, Converter={StaticResource BoolVis}}">
+                                            <TextBlock Text="{l:T ProfileAutoBadge}" FontSize="10.5" FontWeight="SemiBold" Foreground="{StaticResource Brush.Mint}" />
+                                        </Border>
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding WinnerDescription}" Margin="10,6,10,0" HorizontalAlignment="Center"
+                                               TextAlignment="Center" TextWrapping="Wrap" FontSize="12"
+                                               Foreground="{StaticResource Brush.TextSecondary}" />
+
+                                    <Grid Margin="0,20,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="10" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Style="{StaticResource StatCard}">
+                                            <StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE73E;" FontSize="12" Foreground="{StaticResource Brush.Mint}" />
+                                                    <TextBlock Style="{StaticResource StatLabel}" Text="{l:T AutoFindSuccessLabel}" />
+                                                </StackPanel>
+                                                <TextBlock Text="{Binding WinnerScore}" Margin="0,6,0,0" FontFamily="{StaticResource Font.Display}"
+                                                           FontSize="20" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Column="2" Style="{StaticResource StatCard}">
+                                            <StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE916;" FontSize="12" Foreground="{StaticResource Brush.Cyan}" />
+                                                    <TextBlock Style="{StaticResource StatLabel}" Text="{l:T AutoFindLatencyLabel}" />
+                                                </StackPanel>
+                                                <TextBlock Text="{Binding WinnerLatency}" Margin="0,6,0,0" FontFamily="{StaticResource Font.Display}"
+                                                           FontSize="20" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+                                    <TextBlock Text="{Binding WinnerNote}" Margin="4,12,4,0" HorizontalAlignment="Center" TextAlignment="Center"
+                                               TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource Brush.TextTertiary}" />
+                                </StackPanel>
+                                <Grid Grid.Row="1">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="10" />
+                                        <ColumnDefinition Width="1.6*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Button Style="{StaticResource GhostButton}" Padding="12,9" Content="{l:T AutoFindClose}" Click="AutoFindDismiss_Click" />
+                                    <Button Grid.Column="2" Style="{StaticResource PrimaryButton}" Click="AutoFindApply_Click">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE7E8;" FontSize="12" />
+                                            <TextBlock Text="{l:T AutoFindApply}" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+                            </Grid>
+
+                            <!-- ===== nothing works ===== -->
+                            <Grid x:Name="AutoFindFailPanel" Visibility="Hidden" Opacity="0">
+                                <Grid.RenderTransform>
+                                    <TranslateTransform x:Name="AutoFindFailY" />
+                                </Grid.RenderTransform>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,0,8">
+                                    <Grid x:Name="FailBadge" Width="84" Height="84" HorizontalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+                                        <Grid.RenderTransform>
+                                            <ScaleTransform x:Name="FailBadgeScale" />
+                                        </Grid.RenderTransform>
+                                        <Ellipse Fill="#14F5B544" Stroke="#59F5B544" StrokeThickness="1" />
+                                        <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE7BA;" FontSize="30" Margin="0,0,0,2"
+                                                   HorizontalAlignment="Center" Foreground="{StaticResource Brush.Amber}" />
+                                    </Grid>
+                                    <TextBlock Text="{Binding AutoFindTitle}" Margin="0,16,0,0" HorizontalAlignment="Center"
+                                               FontFamily="{StaticResource Font.Display}" FontSize="20" FontWeight="SemiBold" />
+                                    <Border Style="{StaticResource Card}" Margin="0,18,0,0" Padding="16,14">
+                                        <TextBlock Text="{Binding AutoFindMessage}" TextWrapping="Wrap" FontSize="12.5" LineHeight="19"
+                                                   Foreground="{StaticResource Brush.TextSecondary}" />
+                                    </Border>
+                                </StackPanel>
+                                <Grid Grid.Row="1">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Button Style="{StaticResource GhostButton}" Padding="12,9" Content="{l:T AutoFindClose}" Click="AutoFindDismiss_Click" />
+                                    <Rectangle Grid.Column="1" Width="10"
+                                               Visibility="{Binding AutoFindSuggestProxy, Converter={StaticResource BoolVis}}" />
+                                    <Button Grid.Column="2" Style="{StaticResource PrimaryButton}" Click="AutoFindProxy_Click"
+                                            Visibility="{Binding AutoFindSuggestProxy, Converter={StaticResource BoolVis}}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE774;" FontSize="12" />
+                                            <TextBlock Text="{l:T AutoFindSwitchProxy}" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+                            </Grid>
+                        </Grid>
                     </Grid>
                 </Border>
             </Grid>

@@ -1,11 +1,29 @@
+using System.Text.Json.Serialization;
+using LiDPI.Localization;
+
 namespace LiDPI.Core;
 
 /// <summary>Set of DPI bypass techniques applied by an engine.</summary>
 public sealed record BypassProfile
 {
     public string Id { get; init; } = "";
+    /// <summary>Fallback name; shown texts come from <see cref="DisplayName"/> (language file key "Profile.{Id}.Name").</summary>
     public string Name { get; init; } = "";
+    /// <summary>Fallback description; see <see cref="DisplayDescription"/>.</summary>
     public string Description { get; init; } = "";
+
+    /// <summary>Name in the current UI language.</summary>
+    [JsonIgnore]
+    public string DisplayName => Loc.Instance.TryGet($"Profile.{Id}.Name", out var s) ? s : Name;
+
+    /// <summary>
+    /// Description in the current UI language. The auto-found profile describes its own techniques, built-ins use
+    /// "Profile.{Id}.Desc".
+    /// </summary>
+    [JsonIgnore]
+    public string DisplayDescription =>
+        Id == AutoFind.CustomProfileId ? AutoFind.Describe(this)
+        : Loc.Instance.TryGet($"Profile.{Id}.Desc", out var s) ? s : Description;
 
     /// <summary>Split the TLS ClientHello into segments.</summary>
     public bool SplitTlsHello { get; init; } = true;

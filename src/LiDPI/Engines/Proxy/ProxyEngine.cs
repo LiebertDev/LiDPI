@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Text;
 using LiDPI.Core;
 using LiDPI.Dns;
+using LiDPI.UI;
 
 namespace LiDPI.Engines.Proxy;
 
@@ -41,7 +42,7 @@ public sealed class ProxyEngine : IBypassEngine
     private int _warnCount, _debugCount;
 
     public EngineMode Mode => EngineMode.Proxy;
-    public string DisplayName => "Sadece Tarayıcı (Proxy)";
+    public string DisplayName => Strings.EngineProxyName;
     public bool RequiresAdmin => false;
     public EngineState State { get; private set; } = EngineState.Stopped;
     public EngineStats Stats { get; } = new();
@@ -86,15 +87,15 @@ public sealed class ProxyEngine : IBypassEngine
             }
             catch (Exception ex)
             {
-                Write("Error", $"Proxy başlatılamadı: {ex.Message}");
+                Write("Error", Strings.LogProxyStartFailed(ex.Message));
                 await TeardownAsync().ConfigureAwait(false);
                 SetState(EngineState.Error);
                 return;
             }
             Stats.StartedAt = DateTime.UtcNow;
             SetState(EngineState.Running);
-            if (DnsCache.Flush()) Write("Info", "DNS önbelleği temizlendi.");
-            Write("Info", "İpucu: Discord gibi açık uygulamaları bir kez yeniden başlatın.");
+            if (DnsCache.Flush()) Write("Info", Strings.LogDnsFlushed);
+            Write("Info", Strings.LogRestartAppsHint);
         }
         finally
         {
@@ -113,8 +114,8 @@ public sealed class ProxyEngine : IBypassEngine
             await TeardownAsync().ConfigureAwait(false);
             SetState(EngineState.Stopped);
             if (wasRunning)
-                Write("Info", ConfigureSystemProxy ? "Proxy durduruldu, sistem proxy ayarları geri yüklendi." : "Proxy durduruldu.");
-            if (DnsCache.Flush()) Write("Info", "DNS önbelleği temizlendi.");
+                Write("Info", ConfigureSystemProxy ? Strings.LogProxyStoppedRestored : Strings.LogProxyStopped);
+            if (DnsCache.Flush()) Write("Info", Strings.LogDnsFlushed);
         }
         finally
         {
@@ -133,7 +134,7 @@ public sealed class ProxyEngine : IBypassEngine
         _cts = new CancellationTokenSource();
         if (p.Dns == DnsMode.DoH)
         {
-            _resolver = new DohResolver(DohResolver.FindProvider(p.DohProviderName));
+            _resolver = new DohResolver(DohResolver.PrepareProvider(p.DohProviderName, m => Write("Info", m)));
             _resolver.Warning += m => LimitedWrite("Warn", m);
         }
 
@@ -151,9 +152,9 @@ public sealed class ProxyEngine : IBypassEngine
             _proxySet = true;
         }
 
-        Write("Info", $"Proxy 127.0.0.1:{port} adresinde çalışıyor ({Describe(p)}).");
+        Write("Info", Strings.LogProxyRunning(port, Describe(p)));
         if (p.DisorderSegments || p.FakePacket || p.WrongChecksumFake)
-            Write("Info", "Ters sıra / sahte paket teknikleri yalnızca 'Tüm Uygulamalar' modunda uygulanabilir; proxy modunda yok sayıldı.");
+            Write("Info", Strings.LogProxyIgnoredTechniques);
     }
 
     private static Socket Bind(out int port)
@@ -242,7 +243,7 @@ public sealed class ProxyEngine : IBypassEngine
             catch (SocketException ex)
             {
                 if (ct.IsCancellationRequested) break;
-                LimitedWrite("Warn", $"Bağlantı kabul edilemedi: {ex.Message}");
+                LimitedWrite("Warn", Strings.LogAcceptFailed(ex.Message));
                 continue;
             }
             _ = HandleClientAsync(client, ct);
@@ -375,7 +376,7 @@ public sealed class ProxyEngine : IBypassEngine
         catch (ObjectDisposedException) { }
         catch (Exception ex)
         {
-            LimitedWrite("Warn", $"Bağlantı hatası: {ex.Message}");
+            LimitedWrite("Warn", Strings.LogConnectionError(ex.Message));
         }
         finally
         {
@@ -483,7 +484,7 @@ public sealed class ProxyEngine : IBypassEngine
                     }
                     catch (Exception ex) when (!ct.IsCancellationRequested && ex is not ObjectDisposedException)
                     {
-                        LimitedWrite("Warn", $"DoH çözümlemesi başarısız ({host}), sistem DNS'i kullanılıyor.");
+                        LimitedWrite("Warn", Strings.LogDohFallbackSystem(host));
                         addrs = await System.Net.Dns.GetHostAddressesAsync(host, ct).ConfigureAwait(false);
                     }
                 }
@@ -494,7 +495,7 @@ public sealed class ProxyEngine : IBypassEngine
             }
             catch (SocketException)
             {
-                LimitedWrite("Warn", $"Alan adı çözülemedi: {host}");
+                LimitedWrite("Warn", Strings.LogResolveFailed(host));
                 return null;
             }
             if (resolver is not null) Stats.IncrementDnsQueries();
@@ -503,11 +504,11 @@ public sealed class ProxyEngine : IBypassEngine
         var ordered = OrderAddresses(addrs, port);
         if (ordered.Count == 0)
         {
-            LimitedWrite("Warn", $"Alan adı için adres bulunamadı: {host}");
+            LimitedWrite("Warn", Strings.LogNoAddress(host));
             return null;
         }
         var s = await ConnectAnyAsync(ordered, port, ct).ConfigureAwait(false);
-        if (s is null) LimitedWrite("Warn", $"Sunucuya bağlanılamadı: {host}:{port}");
+        if (s is null) LimitedWrite("Warn", Strings.LogConnectFailed(host, port));
         return s;
     }
 
@@ -686,9 +687,9 @@ public sealed class ProxyEngine : IBypassEngine
     private static string Describe(BypassProfile p)
     {
         var t = new List<string>();
-        if (p.SplitTlsHello) t.Add(p.SplitAtSni ? "SNI'de bölme" : $"{p.SplitPosition}. baytta bölme");
-        if (p.HttpHostTricks) t.Add("HTTP Host hilesi");
-        t.Add(p.Dns == DnsMode.DoH ? $"DoH: {DohResolver.FindProvider(p.DohProviderName).Name}" : "sistem DNS");
+        if (p.SplitTlsHello) t.Add(p.SplitAtSni ? Strings.DescSplitSni : Strings.DescSplitAt(p.SplitPosition));
+        if (p.HttpHostTricks) t.Add(Strings.DescHostTrick);
+        t.Add(p.Dns == DnsMode.DoH ? $"DoH: {DohResolver.FindProvider(p.DohProviderName).Name}" : Strings.DescSystemDns);
         return string.Join(", ", t);
     }
 

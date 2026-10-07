@@ -1,6 +1,6 @@
 ﻿using System.Windows;
-using System.Windows.Media.Animation;
 using LiDPI.Core;
+using LiDPI.Localization;
 using LiDPI.UI.Services;
 using LiDPI.UI.ViewModels;
 
@@ -47,12 +47,13 @@ public partial class App : Application
             return;
         }
 
-        // Cap every animation at 60 fps.
-        Timeline.DesiredFrameRateProperty.OverrideMetadata(typeof(Timeline), new FrameworkPropertyMetadata { DefaultValue = 60 });
+        // No global frame-rate cap: short transitions run at the display's refresh rate (a 60 fps cap looks
+        // stuttery on 120-240 Hz panels). Only the endless idle loops set DesiredFrameRate = 60 themselves
+        // (PowerButton breath/spin, auto-find shimmer, Spinner style) to keep idle GPU use low.
 
         DispatcherUnhandledException += (_, args) =>
         {
-            AddLog("Error", $"Beklenmeyen hata: {args.Exception.Message}");
+            AddLog("Error", LiDPI.UI.Strings.LogUnexpectedError(args.Exception.Message));
             args.Handled = true;
         };
         AppDomain.CurrentDomain.UnhandledException += (_, _) => StopEngineBlocking();
@@ -61,21 +62,27 @@ public partial class App : Application
         try { LiDPI.Engines.Proxy.ProxyEngine.RestoreIfDirty(); } catch { /* best effort */ }
 
         var settings = AppSettings.Load();
+        // before anything builds text: saved choice, else the Windows display language (tr → Turkish, others → English)
+        Loc.Instance.SetLanguage(settings.Language);
         _controller = new EngineController(EngineFactory.Create); // ENGINE-WIRE (UI testing: m => new NullEngine(m))
         _vm = new MainViewModel(_controller, settings);
-        _window = new MainWindow(_vm);
-        MainWindow = _window;
         _tray = new TrayService(_vm, ShowMainWindow, () => _ = ExitAsync());
 
         var startInTray = e.Args.Any(a => string.Equals(a, "--tray", StringComparison.OrdinalIgnoreCase))
                           || settings.StartMinimized;
-        if (!startInTray) _window.Show();
+        // Started in the tray: the window is not even built until it is first shown.
+        if (!startInTray) EnsureWindow().Show();
+        else MemoryTrimmer.TrimSoon(TimeSpan.FromSeconds(15));   // drop start-up garbage once things settle
 
         _ = _vm.SyncAutostartAsync();
         if (settings.AutoConnectOnLaunch) _ = _vm.ConnectAsync();
+        _vm.StartBackgroundServices();
     }
 
-    /// <summary>Runs <see cref="ProfileProbe"/> headless, writes a UTF-8 report and exits.</summary>
+    /// <summary>
+    /// Runs <see cref="ProfileProbe"/> headless against the user's test sites (Settings → Test sites, plus the internal
+    /// control site), writes a UTF-8 report and exits. The report is a developer tool and stays in English.
+    /// </summary>
     private async Task RunProbeAsync(string outFile)
     {
         int exitCode = 0;
@@ -83,22 +90,29 @@ public partial class App : Application
         var sb = new System.Text.StringBuilder();
         try
         {
-            System.IO.File.WriteAllText(outFile, $"LiDPI sonda çalışıyor... {DateTime.Now:HH:mm:ss}{Environment.NewLine}", new System.Text.UTF8Encoding(false));
+            var settings = AppSettings.Load();
+            Loc.Instance.SetLanguage(settings.Language);   // variant / profile names in the report
+            ProbeTargets.Configure(settings.TestSites);
+            var targets = ProbeTargets.Urls;
+            header.Add("targets: " + string.Join(", ", targets.Select(ProbeTargets.HostOf))
+                       + (settings.TestSites is null ? " (default)" : " (custom)"));
+
+            System.IO.File.WriteAllText(outFile, $"LiDPI probe running... {DateTime.Now:HH:mm:ss}{Environment.NewLine}", new System.Text.UTF8Encoding(false));
             var progress = new Action<ProbeProgress>(p =>
             {
                 if (p.Completed is not { } r) return;
                 lock (sb) sb.AppendLine($"[{p.Index + 1}/{p.Total}] {p.VariantName}: {r.OkCount}/{r.Targets.Count}");
-                try { lock (sb) System.IO.File.WriteAllText(outFile, "LiDPI sonda çalışıyor..." + Environment.NewLine + sb, new System.Text.UTF8Encoding(false)); }
+                try { lock (sb) System.IO.File.WriteAllText(outFile, "LiDPI probe running..." + Environment.NewLine + sb, new System.Text.UTF8Encoding(false)); }
                 catch { /* progress file is best effort */ }
             });
-            var results = await Task.Run(() => ProfileProbe.RunAsync(ProfileProbe.DefaultCandidates(),
+            var results = await Task.Run(() => ProfileProbe.RunAsync(ProfileProbe.DefaultCandidates(), targets,
                 progress: new SyncProgress(progress), diagnostics: m => { lock (header) header.Add("diag: " + m); }, rounds: 2));
             System.IO.File.WriteAllText(outFile, ProfileProbe.FormatReport(results, header), new System.Text.UTF8Encoding(false));
         }
         catch (Exception ex)
         {
             exitCode = 1;
-            try { System.IO.File.WriteAllText(outFile, $"SONDA HATASI: {ex}{Environment.NewLine}{string.Join(Environment.NewLine, header)}{Environment.NewLine}{sb}", new System.Text.UTF8Encoding(false)); }
+            try { System.IO.File.WriteAllText(outFile, $"PROBE ERROR: {ex}{Environment.NewLine}{string.Join(Environment.NewLine, header)}{Environment.NewLine}{sb}", new System.Text.UTF8Encoding(false)); }
             catch { /* nowhere to report */ }
         }
         Shutdown(exitCode);
@@ -111,8 +125,34 @@ public partial class App : Application
 
     private void ShowMainWindow()
     {
+        if (IsExiting || _vm is null) return;
+        EnsureWindow().ShowFromTray();
+    }
+
+    /// <summary>
+    /// The window only exists while it is on screen: closing it to the tray destroys it (visual tree,
+    /// storyboards, bitmaps) and the next show builds a fresh one from the long-lived view model, which
+    /// replays the entrance animation. Tray, engine and background services never depend on it.
+    /// </summary>
+    private MainWindow EnsureWindow()
+    {
+        if (_window is { } existing) return existing;
+        var w = new MainWindow(_vm!);
+        w.Closed += OnWindowClosed;
+        _window = w;
+        MainWindow = w;
+        return w;
+    }
+
+    private void OnWindowClosed(object? sender, EventArgs e)
+    {
+        if (sender is MainWindow w) w.Closed -= OnWindowClosed;
+        if (!ReferenceEquals(sender, _window)) return;
+        _window = null;
+        MainWindow = null;
         if (IsExiting) return;
-        _window?.ShowFromTray();
+        // let the close animation-free teardown finish, then give the freed memory back to the OS
+        MemoryTrimmer.TrimSoon(TimeSpan.FromSeconds(2));
     }
 
     /// <summary>Graceful exit: stop the engine (bounded), remove the tray icon, shut down.</summary>
@@ -120,6 +160,13 @@ public partial class App : Application
     {
         if (Interlocked.Exchange(ref _exiting, 1) != 0) return;
         _window?.Hide();
+        _vm?.StopBackgroundServices();
+        if (_vm is not null)
+        {
+            // an auto-find probe runs its own packet engine: let it shut that down first (bounded)
+            try { await Task.WhenAny(_vm.StopAutoFindAsync(), Task.Delay(StopTimeout)); }
+            catch { /* best effort */ }
+        }
         if (_controller is not null)
         {
             try { await Task.WhenAny(_controller.StopAsync(), Task.Delay(StopTimeout)); }
@@ -144,6 +191,7 @@ public partial class App : Application
     {
         // Safety net for any path that reaches Shutdown without ExitAsync.
         Interlocked.Exchange(ref _exiting, 1);
+        try { _vm?.StopBackgroundServices(); } catch { /* best effort */ }
         StopEngineBlocking();
         _tray?.Dispose();
         _instance?.Dispose();

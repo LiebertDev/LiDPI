@@ -14,6 +14,9 @@ public sealed class TrayService : IDisposable
     private readonly WinForms.ContextMenuStrip _menu;
     private readonly WinForms.ToolStripMenuItem _toggleItem;
     private readonly WinForms.ToolStripMenuItem _statusItem;
+    private readonly WinForms.ToolStripMenuItem _showItem;
+    private readonly WinForms.ToolStripMenuItem _updateItem;
+    private readonly WinForms.ToolStripMenuItem _exitItem;
     private readonly Dictionary<EngineState, Drawing.Icon> _icons = new();
     private bool _disposed;
 
@@ -22,9 +25,10 @@ public sealed class TrayService : IDisposable
         _vm = vm;
 
         _statusItem = new WinForms.ToolStripMenuItem { Enabled = false };
-        _toggleItem = new WinForms.ToolStripMenuItem("Bağlan", null, (_, _) => _ = _vm.ToggleAsync());
-        var showItem = new WinForms.ToolStripMenuItem("Göster", null, (_, _) => showWindow());
-        var exitItem = new WinForms.ToolStripMenuItem("Çıkış", null, (_, _) => exitApp());
+        _toggleItem = new WinForms.ToolStripMenuItem(Strings.TrayConnect, null, (_, _) => _ = _vm.ToggleAsync());
+        var showItem = _showItem = new WinForms.ToolStripMenuItem(Strings.TrayShow, null, (_, _) => showWindow());
+        var updateItem = _updateItem = new WinForms.ToolStripMenuItem(Strings.TrayUpdateCheck, null, (_, _) => _ = CheckUpdatesAsync());
+        var exitItem = _exitItem = new WinForms.ToolStripMenuItem(Strings.TrayExit, null, (_, _) => exitApp());
         showItem.Font = new Drawing.Font(showItem.Font, Drawing.FontStyle.Bold);
 
         _menu = new WinForms.ContextMenuStrip
@@ -34,7 +38,7 @@ public sealed class TrayService : IDisposable
             Padding = new WinForms.Padding(2, 4, 2, 4),
             Font = new Drawing.Font("Segoe UI", 9.5f),
         };
-        _menu.Items.AddRange([_statusItem, new WinForms.ToolStripSeparator(), _toggleItem, showItem, new WinForms.ToolStripSeparator(), exitItem]);
+        _menu.Items.AddRange([_statusItem, new WinForms.ToolStripSeparator(), _toggleItem, showItem, updateItem, new WinForms.ToolStripSeparator(), exitItem]);
         foreach (WinForms.ToolStripItem item in _menu.Items)
         {
             item.ForeColor = Drawing.Color.FromArgb(0xE6, 0xE6, 0xEB);
@@ -44,8 +48,11 @@ public sealed class TrayService : IDisposable
 
         _notifyIcon = new WinForms.NotifyIcon { ContextMenuStrip = _menu, Visible = false };
         _notifyIcon.MouseUp += (_, e) => { if (e.Button == WinForms.MouseButtons.Left) showWindow(); };
+        _notifyIcon.BalloonTipClicked += (_, _) => showWindow();
 
         _vm.PropertyChanged += OnVmPropertyChanged;
+        _vm.BalloonRequested += OnBalloonRequested;
+        LiDPI.Localization.Loc.LanguageChanged += OnLanguageChanged;
         Update();
         _notifyIcon.Visible = true;
     }
@@ -53,6 +60,15 @@ public sealed class TrayService : IDisposable
     private void OnVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(MainViewModel.State) or nameof(MainViewModel.Subtitle)) Update();
+    }
+
+    private void OnLanguageChanged(object? sender, EventArgs e)
+    {
+        if (_disposed) return;
+        _showItem.Text = Strings.TrayShow;
+        _updateItem.Text = Strings.TrayUpdateCheck;
+        _exitItem.Text = Strings.TrayExit;
+        Update();
     }
 
     private void Update()
@@ -67,8 +83,24 @@ public sealed class TrayService : IDisposable
         _notifyIcon.Text = text.Length > 120 ? text[..120] : text;
         _statusItem.Text = $"{_vm.StatusText} · {_vm.Subtitle}";
 
-        _toggleItem.Text = _vm.IsActive ? "Bağlantıyı Kes" : "Bağlan";
+        _toggleItem.Text = _vm.IsActive ? Strings.TrayDisconnect : Strings.TrayConnect;
         _toggleItem.Enabled = state != EngineState.Stopping;
+    }
+
+    private void OnBalloonRequested(string title, string text)
+    {
+        if (_disposed) return;
+        try { _notifyIcon.ShowBalloonTip(8000, title, text, WinForms.ToolTipIcon.Warning); }
+        catch { /* notifications disabled / shell not ready */ }
+    }
+
+    /// <summary>Tray "Check for updates": same manual check as Settings; the result arrives as a balloon.</summary>
+    private async Task CheckUpdatesAsync()
+    {
+        var text = await _vm.CheckForUpdatesManualAsync();
+        if (_disposed || text is null) return;
+        try { _notifyIcon.ShowBalloonTip(5000, Strings.TrayUpdateBalloonTitle, text, WinForms.ToolTipIcon.Info); }
+        catch { /* notifications disabled / shell not ready */ }
     }
 
     public void Dispose()
@@ -76,6 +108,8 @@ public sealed class TrayService : IDisposable
         if (_disposed) return;
         _disposed = true;
         _vm.PropertyChanged -= OnVmPropertyChanged;
+        _vm.BalloonRequested -= OnBalloonRequested;
+        LiDPI.Localization.Loc.LanguageChanged -= OnLanguageChanged;
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _menu.Dispose();

@@ -491,3 +491,7 @@ out/
 
 # WinDivert binaries are embedded into the exe at build time
 !src/LiDPI/native/x64/
+
+# Signing keys must never be committed
+*.pem
+*.key

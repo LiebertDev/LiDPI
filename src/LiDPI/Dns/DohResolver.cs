@@ -49,10 +49,97 @@ public sealed class DohResolver : IDisposable
     /// <summary>Raised when a provider fails and the next one is tried (message is Turkish).</summary>
     public event Action<string>? Warning;
 
-    /// <summary>Finds a built-in provider by name; defaults to Cloudflare.</summary>
-    public static DohProvider FindProvider(string? name) =>
-        DohProviders.All.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
-        ?? DohProviders.Cloudflare;
+    /// <summary>
+    /// Finds a provider by name: a built-in one, or the configured custom provider for
+    /// <see cref="DohProviders.CustomKey"/>; defaults to Cloudflare.
+    /// </summary>
+    public static DohProvider FindProvider(string? name)
+    {
+        if (string.Equals(name, DohProviders.CustomKey, StringComparison.OrdinalIgnoreCase))
+            return DohProviders.Custom ?? DohProviders.Cloudflare;
+        return DohProviders.All.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
+               ?? DohProviders.Cloudflare;
+    }
+
+    /// <summary>
+    /// Engine start: <see cref="FindProvider"/> plus, for a custom provider without a bootstrap IP, one lookup of its
+    /// host through the system resolver (before any packet interception is active). Falls back to Cloudflare if that
+    /// fails. Blocking; call off the UI thread.
+    /// </summary>
+    public static DohProvider PrepareProvider(string? name, Action<string>? log)
+    {
+        var p = FindProvider(name);
+        if (!string.IsNullOrEmpty(p.BootstrapIp)) return p;
+        try
+        {
+            var ip = ResolveBootstrap(p);
+            log?.Invoke(LiDPI.UI.Strings.LogDohBootstrapResolved(new Uri(p.Url).Host, ip.ToString()));
+            return p with { BootstrapIp = ip.ToString() };
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke(LiDPI.UI.Strings.LogDohBootstrapFailed(new Uri(p.Url).Host, ex.Message));
+            return DohProviders.Cloudflare;
+        }
+    }
+
+    /// <summary>
+    /// One DoH query for example.com against <paramref name="provider"/> only (no fallback, no cache).
+    /// Returns the round-trip time; throws on any failure. Resolves an empty bootstrap IP via system DNS first.
+    /// </summary>
+    public static async Task<TimeSpan> TestAsync(DohProvider provider, TimeSpan timeout, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        // one budget for the whole test, including the system-DNS bootstrap lookup
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(timeout);
+        if (string.IsNullOrEmpty(provider.BootstrapIp))
+        {
+            var ip = await ResolveBootstrapAsync(provider, cts.Token).ConfigureAwait(false);
+            provider = provider with { BootstrapIp = ip.ToString() };
+        }
+        using var client = CreateClient(provider);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        using var content = new ByteArrayContent(DnsWire.BuildQuery("example.com", DnsWire.TypeA));
+        content.Headers.ContentType = DnsMessage;
+        using var req = new HttpRequestMessage(HttpMethod.Post, provider.Url)
+        {
+            Content = content,
+            Version = HttpVersion.Version20,
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+        };
+        using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
+        sw.Stop();
+        if (body.Length < 12 || (body[2] & 0x80) == 0) throw new InvalidDataException(LiDPI.UI.Strings.ErrDohInvalidResponse);
+        var list = new List<IPAddress>(2);
+        uint ttl = uint.MaxValue;
+        DnsWire.TryParseAddresses(body, list, ref ttl);
+        if (list.Count == 0) throw new InvalidDataException(LiDPI.UI.Strings.ErrDohNoAddress);
+        return sw.Elapsed;
+    }
+
+    /// <summary>System-resolver lookup of a provider's host (IPv4 preferred).</summary>
+    private static IPAddress ResolveBootstrap(DohProvider p)
+    {
+        var host = new Uri(p.Url).IdnHost;
+        if (IPAddress.TryParse(host.Trim('[', ']'), out var literal)) return literal;
+        return PickBootstrap(System.Net.Dns.GetHostAddresses(host));
+    }
+
+    /// <summary>Cancellable variant of <see cref="ResolveBootstrap"/> (the lookup itself honours <paramref name="ct"/>).</summary>
+    private static async Task<IPAddress> ResolveBootstrapAsync(DohProvider p, CancellationToken ct)
+    {
+        var host = new Uri(p.Url).IdnHost;
+        if (IPAddress.TryParse(host.Trim('[', ']'), out var literal)) return literal;
+        return PickBootstrap(await System.Net.Dns.GetHostAddressesAsync(host, ct).ConfigureAwait(false));
+    }
+
+    private static IPAddress PickBootstrap(IPAddress[] addrs) =>
+        addrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)
+        ?? addrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetworkV6 && Socket.OSSupportsIPv6)
+        ?? throw new SocketException((int)SocketError.HostNotFound);
 
     /// <summary>Sends a raw DNS wire query and returns the raw wire response.</summary>
     public async Task<byte[]> QueryRawAsync(byte[] dnsWireQuery, CancellationToken ct)
@@ -76,10 +163,10 @@ public sealed class DohResolver : IDisposable
             {
                 last = ex;
                 if (i + 1 < _providers.Length)
-                    Warning?.Invoke($"DoH ({_providers[idx].Name}) yanıt vermedi, {_providers[(idx + 1) % _providers.Length].Name} deneniyor.");
+                    Warning?.Invoke(LiDPI.UI.Strings.LogDohSwitch(_providers[idx].Name, _providers[(idx + 1) % _providers.Length].Name));
             }
         }
-        throw new HttpRequestException("Hiçbir DoH sağlayıcısına ulaşılamadı.", last);
+        throw new HttpRequestException(LiDPI.UI.Strings.ErrDohAllFailed, last);
     }
 
     /// <summary>Resolves A and AAAA records (cached, TTL-respecting). Returns an empty array for NXDOMAIN.</summary>
@@ -154,7 +241,7 @@ public sealed class DohResolver : IDisposable
         resp.EnsureSuccessStatusCode();
         var body = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
         if (body.Length < 12 || (body[2] & 0x80) == 0)
-            throw new InvalidDataException("Geçersiz DoH yanıtı.");
+            throw new InvalidDataException(LiDPI.UI.Strings.ErrDohInvalidResponse);
         return body;
     }
 
@@ -171,7 +258,8 @@ public sealed class DohResolver : IDisposable
 
     private static HttpClient CreateClient(DohProvider p)
     {
-        var bootstrap = IPAddress.Parse(p.BootstrapIp);
+        // a custom provider normally arrives here already prepared; resolve as a last resort
+        var bootstrap = string.IsNullOrEmpty(p.BootstrapIp) ? ResolveBootstrap(p) : IPAddress.Parse(p.BootstrapIp);
         var handler = new SocketsHttpHandler
         {
             UseProxy = false,              // never loop through our own (system) proxy

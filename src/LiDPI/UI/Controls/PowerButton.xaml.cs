@@ -29,15 +29,16 @@ public partial class PowerButton : UserControl
     private static readonly IEasingFunction EaseInOut = Frozen(new SineEase { EasingMode = EasingMode.EaseInOut });
 
     private static readonly TimeSpan BreathPeriod = TimeSpan.FromSeconds(2.5);
-    private static readonly DoubleAnimation BreathOpacity = Frozen(new DoubleAnimation(0.55, 1.0, BreathPeriod)
+    // endless idle loops: capped at 60 fps (everything else follows the display refresh rate)
+    private static readonly DoubleAnimation BreathOpacity = FrozenLoop(new DoubleAnimation(0.55, 1.0, BreathPeriod)
     {
         AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = EaseInOut,
     });
-    private static readonly DoubleAnimation BreathScale = Frozen(new DoubleAnimation(0.95, 1.04, BreathPeriod)
+    private static readonly DoubleAnimation BreathScale = FrozenLoop(new DoubleAnimation(0.95, 1.04, BreathPeriod)
     {
         AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = EaseInOut,
     });
-    private static readonly DoubleAnimation Spin = Frozen(new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1))
+    private static readonly DoubleAnimation Spin = FrozenLoop(new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1))
     {
         RepeatBehavior = RepeatBehavior.Forever,
     });
@@ -249,5 +250,11 @@ public partial class PowerButton : UserControl
     {
         f.Freeze();
         return f;
+    }
+
+    private static T FrozenLoop<T>(T t) where T : Timeline
+    {
+        Timeline.SetDesiredFrameRate(t, 60);
+        return Frozen(t);
     }
 }

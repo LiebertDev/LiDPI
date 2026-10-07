@@ -59,7 +59,7 @@ public static class AutostartService
             <?xml version="1.0" encoding="UTF-16"?>
             <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
               <RegistrationInfo>
-                <Description>LiDPI - Windows ile başlat</Description>
+                <Description>{SecurityElement.Escape("LiDPI - " + LiDPI.UI.Strings.SettingStartWithWindows)}</Description>
               </RegistrationInfo>
               <Triggers>
                 <LogonTrigger>

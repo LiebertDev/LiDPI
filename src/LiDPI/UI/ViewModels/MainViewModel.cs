@@ -6,12 +6,13 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
 using LiDPI.Core;
+using LiDPI.Localization;
 using LiDPI.UI.Services;
 
 namespace LiDPI.UI.ViewModels;
 
 /// <summary>State of the whole UI. All members must be used on the UI thread.</summary>
-public sealed class MainViewModel : ObservableObject
+public sealed partial class MainViewModel : ObservableObject
 {
     private const int MaxLogLines = 200;
 
@@ -26,10 +27,10 @@ public sealed class MainViewModel : ObservableObject
 
     private EngineState _state = EngineState.Stopped;
     private BypassProfile _selectedProfile;
-    private DohProvider _selectedDoh;
+    private DohOption _selectedDoh;
     private DateTime? _runningSinceUtc;
     private string? _lastError;
-    private string _errorMessage = "";
+    private LocText _errorMessage;
     private string _uptimeText = "00:00:00";
     private long _packets, _connections, _dnsQueries;
     private bool _isViewActive;
@@ -42,8 +43,20 @@ public sealed class MainViewModel : ObservableObject
         _settings = settings;
         _dispatcher = Dispatcher.CurrentDispatcher;
 
-        _selectedProfile = BuiltInProfiles.All.FirstOrDefault(p => p.Id == settings.ProfileId) ?? BuiltInProfiles.Standard;
-        _selectedDoh = DohProviders.All.FirstOrDefault(p => p.Name == settings.DohProviderName) ?? DohProviders.Cloudflare;
+        Profiles = new ObservableCollection<BypassProfile>(BuiltInProfiles.All);
+        if (settings.CustomProfile is { } custom)
+        {
+            // normalise whatever was persisted to the fixed id/name the UI keys on
+            custom = custom with { Id = AutoFind.CustomProfileId, Name = "", Description = "" };
+            settings.CustomProfile = custom;
+            Profiles.Add(custom);
+        }
+        _selectedProfile = Profiles.FirstOrDefault(p => p.Id == settings.ProfileId) ?? BuiltInProfiles.Standard;
+        DohProviderList = [.. DohProviders.All.Select(p => new DohOption(p.Name)), new DohOption(DohProviders.CustomKey)];
+        _selectedDoh = DohProviderList.FirstOrDefault(o => string.Equals(o.Key, settings.DohProviderName, StringComparison.OrdinalIgnoreCase))
+                       ?? DohProviderList[0];
+        InitFeatures();
+        InitLanguage();
         _startWithWindows = settings.StartWithWindows;
 
         _timer = new DispatcherTimer(DispatcherPriority.Background, _dispatcher) { Interval = TimeSpan.FromSeconds(1) };
@@ -62,6 +75,9 @@ public sealed class MainViewModel : ObservableObject
         CopyLogsCommand = new RelayCommand(CopyLogs, () => Logs.Count > 0);
         ClearLogsCommand = new RelayCommand(() => Logs.Clear(), () => Logs.Count > 0);
         OpenUrlCommand = new RelayCommand(p => OpenUrl(p as string));
+
+        ProbeRunner = (variants, progress, ct) => Task.Run(() => ProfileProbe.RunAsync(
+            variants, ProbeTargets.Urls, progress, diagnostics: null, rounds: AutoFind.Rounds, ct: ct, packetTrace: false), ct);
     }
 
     // ===== Commands =====
@@ -83,6 +99,7 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged(nameof(IsError));
             OnPropertyChanged(nameof(IsActive));
             OnPropertyChanged(nameof(CanSwitchMode));
+            OnPropertyChanged(nameof(CanAutoFind));
             OnPropertyChanged(nameof(StatusText));
             CommandManager.InvalidateRequerySuggested();
         }
@@ -93,20 +110,26 @@ public sealed class MainViewModel : ObservableObject
     public bool IsError => _state == EngineState.Error;
     /// <summary>Running or about to run (what the tray toggle reflects).</summary>
     public bool IsActive => _state is EngineState.Running or EngineState.Starting;
-    public bool CanSwitchMode => !IsBusy;
+    public bool CanSwitchMode => !IsBusy && !IsAutoFinding;
 
     public string StatusText => _state switch
     {
-        EngineState.Starting => "Bağlanıyor…",
-        EngineState.Stopping => "Bağlantı kesiliyor…",
-        EngineState.Running => "Koruma Aktif",
-        EngineState.Error => "Hata",
-        _ => "Bağlı Değil",
+        EngineState.Starting => Strings.StatusConnecting,
+        EngineState.Stopping => Strings.StatusDisconnecting,
+        EngineState.Running => Strings.StatusRunning,
+        EngineState.Error => Strings.StatusError,
+        _ => Strings.StatusStopped,
     };
 
-    public string Subtitle => $"{_selectedProfile.Name} · {ModeName(Mode)}";
+    public string Subtitle => $"{_selectedProfile.DisplayName} · {ModeName(Mode)}";
 
-    public string ErrorMessage { get => _errorMessage; private set => Set(ref _errorMessage, value); }
+    public string ErrorMessage => _errorMessage.ToString();
+
+    private void SetErrorMessage(LocText text)
+    {
+        _errorMessage = text;
+        OnPropertyChanged(nameof(ErrorMessage));
+    }
     public string UptimeText { get => _uptimeText; private set => Set(ref _uptimeText, value); }
     public long Packets { get => _packets; private set => Set(ref _packets, value); }
     public long Connections { get => _connections; private set => Set(ref _connections, value); }
@@ -129,7 +152,8 @@ public sealed class MainViewModel : ObservableObject
         set { if (value) SetMode(EngineMode.Divert); }
     }
 
-    public IReadOnlyList<BypassProfile> Profiles => BuiltInProfiles.All;
+    /// <summary>Built-in profiles, plus the auto-found custom profile (last) once a probe produced one.</summary>
+    public ObservableCollection<BypassProfile> Profiles { get; }
 
     public BypassProfile SelectedProfile
     {
@@ -144,16 +168,19 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    public IReadOnlyList<DohProvider> DohProviderList => DohProviders.All;
+    /// <summary>Built-in providers plus "Özel…" (last).</summary>
+    public IReadOnlyList<DohOption> DohProviderList { get; }
 
-    public DohProvider SelectedDoh
+    public DohOption SelectedDoh
     {
         get => _selectedDoh;
         set
         {
             if (value is null || !Set(ref _selectedDoh, value)) return;
-            _settings.DohProviderName = value.Name;
+            _settings.DohProviderName = value.Key;
             _settings.Save();
+            OnPropertyChanged(nameof(IsCustomDohSelected));
+            OnCustomDohSelectionChanged();
             RestartIfRunning();
         }
     }
@@ -188,7 +215,7 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public string AppVersion { get; } =
-        (Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "1.0.0")
+        (typeof(MainViewModel).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "1.0.0")
         .Split('+')[0];
 
     /// <summary>True while the window is visible and not minimized. Drives the live timer.</summary>
@@ -204,13 +231,32 @@ public sealed class MainViewModel : ObservableObject
     }
 
     // ===== Actions =====
-    private BypassProfile EffectiveProfile => _selectedProfile with { DohProviderName = _selectedDoh.Name };
+    private BypassProfile EffectiveProfile => _selectedProfile with { DohProviderName = _selectedDoh.Key };
 
     // Engine start/stop can do synchronous work (driver load, proxy setup) before its first await:
     // run it on the thread pool, serialised in call order, so the UI thread never stalls mid-animation.
-    public Task ToggleAsync() { var (m, p) = (Mode, EffectiveProfile); return RunEngine(() => _controller.ToggleAsync(m, p)); }
-    public Task ConnectAsync() { var (m, p) = (Mode, EffectiveProfile); return RunEngine(() => _controller.StartAsync(m, p)); }
-    public Task DisconnectAsync() => RunEngine(_controller.StopAsync);
+    // While the auto-find probe owns the packet driver, the controller's engine must stay off.
+    public Task ToggleAsync()
+    {
+        if (IsAutoFinding) return Task.CompletedTask;
+        _wantRunning = !IsActive;
+        var (m, p) = (Mode, EffectiveProfile);
+        return RunEngine(() => _controller.ToggleAsync(m, p));
+    }
+
+    public Task ConnectAsync()
+    {
+        if (IsAutoFinding) return Task.CompletedTask;
+        _wantRunning = true;
+        var (m, p) = (Mode, EffectiveProfile);
+        return RunEngine(() => _controller.StartAsync(m, p));
+    }
+
+    public Task DisconnectAsync()
+    {
+        _wantRunning = false;
+        return RunEngine(_controller.StopAsync);
+    }
 
     private Task RunEngine(Func<Task> op)
     {
@@ -229,6 +275,8 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(IsProxyMode));
         OnPropertyChanged(nameof(IsDivertMode));
         OnPropertyChanged(nameof(Subtitle));
+        OnPropertyChanged(nameof(CanAutoFind));
+        OnPropertyChanged(nameof(AutoFindToolTip));
         RestartIfRunning();
     }
 
@@ -262,13 +310,13 @@ public sealed class MainViewModel : ObservableObject
             {
                 _settings.StartWithWindows = enable;
                 _settings.Save();
-                AddLog(new LogEntry(DateTime.Now, "Info", enable ? "Windows ile başlatma etkinleştirildi." : "Windows ile başlatma kapatıldı."));
+                AddLog(new LogEntry(DateTime.Now, "Info", enable ? Strings.LogAutostartOn : Strings.LogAutostartOff));
             }
             else
             {
                 _startWithWindows = !enable;
                 OnPropertyChanged(nameof(StartWithWindows));
-                AddLog(new LogEntry(DateTime.Now, "Error", "Görev Zamanlayıcı kaydı değiştirilemedi."));
+                AddLog(new LogEntry(DateTime.Now, "Error", Strings.LogAutostartFailed));
             }
         }
         finally { _autostartBusy = false; }
@@ -290,9 +338,10 @@ public sealed class MainViewModel : ObservableObject
             _runningSinceUtc = null;
 
         if (s == EngineState.Error)
-            ErrorMessage = _lastError ?? "Motor beklenmedik şekilde durdu. Ayrıntılar için kayıtlara bakın.";
+            SetErrorMessage(_lastError is { } err ? LocText.Raw(err) : LocText.Of(nameof(Strings.ErrorUnexpectedStop)));
 
         State = s;
+        OnEngineStateForReliability(s);
         UpdateTimer();
         RefreshLive();
     }
@@ -315,16 +364,20 @@ public sealed class MainViewModel : ObservableObject
         // only the newest MaxLogLines can survive the cap anyway
         var start = Math.Max(0, batch.Count - MaxLogLines);
         for (var i = 0; i < start; i++)
+        {
+            RememberForDiagnostics(batch[i]);
             if (string.Equals(batch[i].Level, "Error", StringComparison.OrdinalIgnoreCase)) _lastError = batch[i].Message;
+        }
         for (var i = start; i < batch.Count; i++) AddLog(batch[i]);
     }
 
     private void AddLog(LogEntry e)
     {
+        RememberForDiagnostics(e);
         if (string.Equals(e.Level, "Error", StringComparison.OrdinalIgnoreCase))
         {
             _lastError = e.Message;
-            if (_state == EngineState.Error) ErrorMessage = e.Message;
+            if (_state == EngineState.Error) SetErrorMessage(LocText.Raw(e.Message));
         }
         Logs.Add(e);
         while (Logs.Count > MaxLogLines) Logs.RemoveAt(0);
@@ -340,6 +393,7 @@ public sealed class MainViewModel : ObservableObject
     private void RefreshLive()
     {
         if (_state != EngineState.Running || !_isViewActive) return;
+        UpdateHealthLabel();
 
         var since = _controller.Stats?.StartedAt ?? _runningSinceUtc;
         if (since is { } t)
@@ -375,5 +429,304 @@ public sealed class MainViewModel : ObservableObject
         catch { /* no browser / blocked */ }
     }
 
-    public static string ModeName(EngineMode m) => m == EngineMode.Proxy ? "Sadece Tarayıcı" : "Tüm Uygulamalar";
+    public static string ModeName(EngineMode m) => m == EngineMode.Proxy ? Strings.ModeBrowser : Strings.ModeAll;
+
+    // ===================== auto-find best settings =====================
+
+    private AutoFindStage _autoFindStage = AutoFindStage.Idle;
+    private CancellationTokenSource? _autoFindCts;
+    private Task? _autoFindRun;
+    private bool _autoFindWasActive;
+    private bool _autoFindCancelling;
+    private bool _autoFindVariantActive;
+    private double _autoFindProgress;
+    private int _autoFindTotal;
+    private LocText _autoFindCurrent;
+    private string _autoFindCounter = "";
+    private LocText _autoFindTitle;
+    private LocText _autoFindMessage;
+    private bool _autoFindSuggestProxy;
+    private string _winnerScore = "", _winnerLatency = "";
+    private BypassProfile? _winnerProfile;
+    private bool _winnerIsCustom, _winnerPartial;
+
+    /// <summary>
+    /// Runs the probe (replaceable for UI tests). Must not touch the UI thread; progress is marshalled by the caller.
+    /// </summary>
+    public Func<IReadOnlyList<ProbeVariant>, IProgress<ProbeProgress>, CancellationToken, Task<IReadOnlyList<ProbeVariantResult>>> ProbeRunner { get; set; }
+
+    public AutoFindStage AutoFindStage
+    {
+        get => _autoFindStage;
+        private set
+        {
+            if (!Set(ref _autoFindStage, value)) return;
+            OnPropertyChanged(nameof(IsAutoFinding));
+            OnPropertyChanged(nameof(CanSwitchMode));
+            OnPropertyChanged(nameof(CanAutoFind));
+            CommandManager.InvalidateRequerySuggested();
+            RestartHealthTimer(first: _lastHealthUtc is null);
+        }
+    }
+
+    public bool IsAutoFinding => _autoFindStage == AutoFindStage.Running;
+    /// <summary>Divert mode only: the probe drives the WinDivert engine directly.</summary>
+    public bool CanAutoFind => IsDivertMode && !IsBusy && _autoFindStage == AutoFindStage.Idle;
+    public string AutoFindToolTip => IsDivertMode
+        ? Strings.AutoFindToolTip
+        : Strings.AutoFindToolTipNeedsAllApps(Strings.ModeAll);
+
+    public bool IsAutoFindCancelling { get => _autoFindCancelling; private set => Set(ref _autoFindCancelling, value); }
+    /// <summary>True between a variant's start and its result (the view creeps the bar forward meanwhile).</summary>
+    public bool AutoFindVariantActive { get => _autoFindVariantActive; private set => Set(ref _autoFindVariantActive, value); }
+    /// <summary>Completed fraction, 0..1.</summary>
+    public double AutoFindProgress { get => _autoFindProgress; private set => Set(ref _autoFindProgress, value); }
+    public int AutoFindTotal { get => _autoFindTotal; private set => Set(ref _autoFindTotal, value); }
+    public string AutoFindCurrent => _autoFindCurrent.ToString();
+    public string AutoFindCounter { get => _autoFindCounter; private set => Set(ref _autoFindCounter, value); }
+    public string AutoFindTitle => _autoFindTitle.ToString();
+    public string AutoFindMessage => _autoFindMessage.ToString();
+    public bool AutoFindSuggestProxy { get => _autoFindSuggestProxy; private set => Set(ref _autoFindSuggestProxy, value); }
+    public string WinnerName => _winnerProfile?.DisplayName ?? "";
+    public string WinnerDescription => _winnerProfile?.DisplayDescription ?? "";
+    public string WinnerScore { get => _winnerScore; private set => Set(ref _winnerScore, value); }
+    public string WinnerLatency { get => _winnerLatency; private set => Set(ref _winnerLatency, value); }
+    public string WinnerNote => _winnerProfile is null ? ""
+        : (_winnerIsCustom ? Strings.AutoFindNoteCustom : Strings.AutoFindNoteBuiltIn) + (_winnerPartial ? " " + Strings.AutoFindNotePartial : "");
+    public bool WinnerIsCustom => _winnerIsCustom;
+
+    private void SetAutoFindCurrent(LocText text)
+    {
+        _autoFindCurrent = text;
+        OnPropertyChanged(nameof(AutoFindCurrent));
+    }
+
+    /// <summary>One line per finished variant, in test order.</summary>
+    public ObservableCollection<AutoFindRow> AutoFindRows { get; } = new();
+
+    /// <summary>
+    /// Stops the engine (remembering whether it was on), then tests the quick candidate set off the UI thread.
+    /// Completes when the run ends (result shown, failed or cancelled).
+    /// </summary>
+    public async Task StartAutoFindAsync()
+    {
+        if (!CanAutoFind) return;
+
+        var doh = _selectedDoh.Key;
+        var variants = AutoFind.QuickCandidates()
+            .Select(v => v with { Profile = v.Profile! with { DohProviderName = doh } })
+            .ToList();
+
+        _autoFindWasActive = IsActive;
+        AutoFindRows.Clear();
+        AutoFindTotal = variants.Count;
+        AutoFindCounter = $"0 / {variants.Count}";
+        SetAutoFindCurrent(LocText.Of(nameof(Strings.AutoFindPreparing)));
+        AutoFindVariantActive = false;
+        AutoFindProgress = 0;
+        IsAutoFindCancelling = false;
+        AutoFindStage = AutoFindStage.Running;
+
+        using var cts = new CancellationTokenSource();
+        _autoFindCts = cts;
+        try
+        {
+            await StopHealthForAutoFindAsync();       // no health request may overlap the probe
+            await RunEngine(_controller.StopAsync);   // the probe needs the driver to itself
+            cts.Token.ThrowIfCancellationRequested();
+            AddLog(new LogEntry(DateTime.Now, "Info", Strings.LogAutoFindStarted(variants.Count)));
+
+            var progress = new DispatcherProgress(_dispatcher, OnAutoFindProgress);
+            var run = ProbeRunner(variants, progress, cts.Token);
+            _autoFindRun = run;
+            var ranked = await run;
+            cts.Token.ThrowIfCancellationRequested();
+            ShowAutoFindOutcome(AutoFind.Evaluate(ranked));
+        }
+        catch (OperationCanceledException)
+        {
+            // the probe stopped its own engine in a finally; drop answers poisoned while it ran
+            await Task.Run(LiDPI.Dns.DnsCache.Flush);
+            AddLog(new LogEntry(DateTime.Now, "Info", Strings.LogAutoFindCancelled));
+            EndAutoFind(reconnect: _autoFindWasActive);
+        }
+        catch (Exception ex)
+        {
+            AddLog(new LogEntry(DateTime.Now, "Error", Strings.LogAutoFindFailed(ex.Message)));
+            ShowAutoFindFailure(nameof(Strings.AutoFindFailTitleError), LocText.Raw(ex.Message), suggestProxy: false);
+        }
+        finally
+        {
+            _autoFindCts = null;
+            IsAutoFindCancelling = false;
+        }
+    }
+
+    /// <summary>App exit: cancel a running probe and wait until it has stopped its engine.</summary>
+    public Task StopAutoFindAsync()
+    {
+        _autoFindWasActive = false;   // never reconnect on the way out
+        CancelAutoFind();
+        return _autoFindRun is { IsCompleted: false } run
+            ? run.ContinueWith(_ => { }, TaskScheduler.Default)
+            : Task.CompletedTask;
+    }
+
+    public void CancelAutoFind()
+    {
+        if (!IsAutoFinding || _autoFindCts is not { } cts) return;
+        IsAutoFindCancelling = true;
+        SetAutoFindCurrent(LocText.Of(nameof(Strings.AutoFindCancelling)));
+        try { cts.Cancel(); } catch (ObjectDisposedException) { /* already finished */ }
+    }
+
+    /// <summary>"Kapat" on the result: back to whatever was running before the test (with the new profile, if any).</summary>
+    public void DismissAutoFind()
+    {
+        if (_autoFindStage is AutoFindStage.Found or AutoFindStage.Failed) EndAutoFind(reconnect: _autoFindWasActive);
+    }
+
+    /// <summary>"Uygula ve Bağlan": the winner is already selected; connect with it.</summary>
+    public void ApplyAutoFind()
+    {
+        if (_autoFindStage != AutoFindStage.Found) return;
+        EndAutoFind(reconnect: true);
+    }
+
+    /// <summary>Failure suggestion: switch to the browser-only proxy mode.</summary>
+    public void AutoFindSwitchToProxy()
+    {
+        if (_autoFindStage != AutoFindStage.Failed) return;
+        EndAutoFind(reconnect: false);
+        SetMode(EngineMode.Proxy);
+        if (_autoFindWasActive) _ = ConnectAsync();
+    }
+
+    private void EndAutoFind(bool reconnect)
+    {
+        AutoFindStage = AutoFindStage.Idle;
+        if (reconnect) _ = ConnectAsync();
+    }
+
+    private void OnAutoFindProgress(ProbeProgress p)
+    {
+        if (!IsAutoFinding || IsAutoFindCancelling) return;
+        if (p.Completed is not { } r)
+        {
+            SetAutoFindCurrent(LocText.Raw(p.VariantName));
+            AutoFindCounter = $"{p.Index + 1} / {p.Total}";
+            AutoFindVariantActive = true;          // set before the progress so the view sees it
+            AutoFindProgress = (double)p.Index / p.Total;
+            return;
+        }
+
+        AutoFindRows.Add(AutoFindRow.From(r));
+        AutoFindVariantActive = false;
+        AutoFindProgress = (double)(p.Index + 1) / p.Total;
+    }
+
+    private void ShowAutoFindOutcome(AutoFindOutcome o)
+    {
+        AutoFindProgress = 1;
+        RememberAutoFind(o);
+        switch (o.Verdict)
+        {
+            case AutoFindVerdict.Found:
+                var w = o.Winner!;
+                var profile = o.Profile!;
+                if (!o.IsBuiltIn) profile = SaveCustomProfile(profile);
+                SelectProfileForce(profile);
+                _winnerProfile = profile;
+                _winnerIsCustom = !o.IsBuiltIn;
+                _winnerPartial = AutoFind.BlockedOk(w) < w.Targets.Count(t => !ProbeTargets.IsControl(t.Url));
+                WinnerScore = $"{w.OkCount}/{w.Targets.Count}";
+                WinnerLatency = string.Format(Loc.Instance.Culture, "{0:0} ms", w.AvgLatencyMs);
+                OnPropertyChanged(nameof(WinnerName));
+                OnPropertyChanged(nameof(WinnerDescription));
+                OnPropertyChanged(nameof(WinnerIsCustom));
+                OnPropertyChanged(nameof(WinnerNote));
+                AddLog(new LogEntry(DateTime.Now, "Info", Strings.LogAutoFindPicked(w.Variant.Name, w.OkCount, w.Targets.Count, w.AvgLatencyMs)));
+                AutoFindStage = AutoFindStage.Found;
+                break;
+
+            case AutoFindVerdict.NoInternet:
+                ShowAutoFindFailure(nameof(Strings.AutoFindFailTitleNoInternet),
+                    LocText.Of(nameof(Strings.AutoFindFailTextNoInternet)), suggestProxy: false);
+                break;
+
+            case AutoFindVerdict.EngineFailed:
+                ShowAutoFindFailure(nameof(Strings.AutoFindFailTitleEngine),
+                    o.Detail is { } detail ? LocText.Raw(detail) : LocText.Of(nameof(Strings.AutoFindFailTextEngine)),
+                    suggestProxy: true);
+                break;
+
+            default:
+                ShowAutoFindFailure(nameof(Strings.AutoFindFailTitleNothing),
+                    LocText.Of(nameof(Strings.AutoFindFailTextNothing)), suggestProxy: true);
+                break;
+        }
+    }
+
+    private void ShowAutoFindFailure(string titleKey, LocText message, bool suggestProxy)
+    {
+        _autoFindTitle = LocText.Of(titleKey);
+        _autoFindMessage = message;
+        OnPropertyChanged(nameof(AutoFindTitle));
+        OnPropertyChanged(nameof(AutoFindMessage));
+        AutoFindSuggestProxy = suggestProxy;
+        AutoFindStage = AutoFindStage.Failed;
+    }
+
+    /// <summary>Persists the auto-found profile and puts it (last) into the profile list.</summary>
+    private BypassProfile SaveCustomProfile(BypassProfile p)
+    {
+        p = p with { Id = AutoFind.CustomProfileId, Name = "", Description = "" };
+        _settings.CustomProfile = p;
+        var idx = -1;
+        for (var i = 0; i < Profiles.Count; i++)
+            if (Profiles[i].Id == AutoFind.CustomProfileId) { idx = i; break; }
+        if (idx >= 0) Profiles[idx] = p;
+        else Profiles.Add(p);
+        return p;
+    }
+
+    /// <summary>Selects <paramref name="p"/> even if an equal record is already selected (the list item may have been replaced).</summary>
+    private void SelectProfileForce(BypassProfile p)
+    {
+        _selectedProfile = p;
+        _settings.ProfileId = p.Id;
+        _settings.Save();
+        OnPropertyChanged(nameof(SelectedProfile));
+        OnPropertyChanged(nameof(Subtitle));
+    }
+
+    /// <summary>IProgress that posts to the UI dispatcher without blocking the reporting (probe) thread.</summary>
+    private sealed class DispatcherProgress(Dispatcher dispatcher, Action<ProbeProgress> handler) : IProgress<ProbeProgress>
+    {
+        public void Report(ProbeProgress value) => dispatcher.InvokeAsync(() => handler(value));
+    }
+}
+
+public enum AutoFindStage { Idle, Running, Found, Failed }
+
+/// <summary>One DoH provider chip. <see cref="Key"/> is what gets persisted; <see cref="Name"/> is shown (live, see LiveTextConverter).</summary>
+public sealed record DohOption(string Key)
+{
+    public bool IsCustom => Key == DohProviders.CustomKey;
+    public string Name => IsCustom ? Strings.DohCustomChip : Key;
+    public override string ToString() => Name;
+}
+
+/// <summary>One finished variant in the live results list. <see cref="Level"/>: 2 all blocked sites, 1 some, 0 none.</summary>
+public sealed record AutoFindRow(string Name, string Score, string Latency, int Level)
+{
+    public static AutoFindRow From(ProbeVariantResult r)
+    {
+        var blockedTotal = r.Targets.Count(t => !ProbeTargets.IsControl(t.Url));
+        var blockedOk = AutoFind.BlockedOk(r);
+        var level = r.EngineError is not null || blockedOk == 0 ? 0 : blockedOk == blockedTotal ? 2 : 1;
+        var latency = r.EngineError is not null && r.Targets.Count == 0 ? Strings.AutoFindRowError
+                    : double.IsInfinity(r.AvgLatencyMs) ? "—" : string.Format(Loc.Instance.Culture, "{0:0} ms", r.AvgLatencyMs);
+        return new AutoFindRow(r.Variant.Name, $"{r.OkCount}/{r.Targets.Count}", latency, level);
+    }
 }

@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:po="http://schemas.microsoft.com/winfx/2006/xaml/presentation/options"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:l="clr-namespace:LiDPI.Localization"
              mc:Ignorable="po"
              Width="236" Height="236">
     <UserControl.Resources>
@@ -69,7 +70,7 @@
 
         <Button x:Name="Btn" Style="{StaticResource BareButton}" Width="196" Height="196"
                 HorizontalAlignment="Center" VerticalAlignment="Center"
-                AutomationProperties.Name="Bağlantıyı aç/kapat">
+                AutomationProperties.Name="{l:T PowerButtonName}">
             <Grid x:Name="Body" Width="196" Height="196" RenderTransformOrigin="0.5,0.5">
                 <Grid.RenderTransform>
                     <ScaleTransform x:Name="BodyScale" />

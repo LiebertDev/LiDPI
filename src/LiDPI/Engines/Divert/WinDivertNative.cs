@@ -62,7 +62,7 @@ internal static unsafe class WinDivertNative
     static WinDivertNative()
     {
         if (Marshal.SizeOf<WinDivertAddress>() != 80 || sizeof(WinDivertAddress) != 80)
-            throw new InvalidOperationException("WINDIVERT_ADDRESS boyutu 80 bayt değil.");
+            throw new InvalidOperationException("WINDIVERT_ADDRESS is not 80 bytes.");
     }
 
     [DllImport(Dll, SetLastError = true, ExactSpelling = true, CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true)]
@@ -99,8 +99,8 @@ internal static unsafe class WinDivertNative
         sbyte* err = null;
         uint pos = 0;
         if (WinDivertHelperCompileFilter(filter, LayerNetwork, null, 0, &err, &pos)) return null;
-        string msg = err != null ? new string(err) : "bilinmeyen hata";
-        return $"{msg} (konum {pos})";
+        string msg = err != null ? new string(err) : "unknown error";
+        return $"{msg} (position {pos})";
     }
 
     /// <summary>Recomputes all checksums and sends; returns false on failure.</summary>
@@ -130,22 +130,9 @@ internal static unsafe class WinDivertNative
             return WinDivertSend(h, p, (uint)packet.Length, null, a);
     }
 
-    /// <summary>Turkish explanation for a WinDivertOpen failure code.</summary>
-    public static string DescribeOpenError(int code) => code switch
-    {
-        2 => "WinDivert sürücü dosyası bulunamadı (WinDivert64.sys). Antivirüs dosyayı silmiş olabilir.",
-        3 => "Sürücü dosyası yüklenemedi (yol bulunamadı). Uygulamayı yeniden başlatın. (hata 3)",
-        5 => "Erişim reddedildi: 'Tüm Uygulamalar' modu yönetici yetkisi gerektirir. Uygulamayı yönetici olarak çalıştırın.",
-        87 => "WinDivert filtresi geçersiz (iç hata).",
-        193 => "WinDivert.dll bu sistemle uyumsuz (yalnızca 64-bit Windows desteklenir).",
-        577 => "Sürücü imzası doğrulanamadı (hata 577). Secure Boot / sürücü imzası ayarlarını veya antivirüsü kontrol edin.",
-        654 => "Başka bir programın yüklediği uyumsuz bir WinDivert sürücüsü var. Diğer DPI araçlarını kapatıp tekrar deneyin. (hata 654)",
-        1060 => "WinDivert hizmeti oluşturulamadı (hata 1060). Bilgisayarı yeniden başlatıp tekrar deneyin.",
-        1072 => "Eski WinDivert hizmeti silinmek üzere işaretli (hata 1072). Diğer DPI araçlarını kapatın veya bilgisayarı yeniden başlatın.",
-        1275 => "Sürücü Windows tarafından engellendi (hata 1275). Antivirüs veya 'Bellek bütünlüğü' (HVCI) WinDivert'i engelliyor olabilir.",
-        1753 => "Windows Filtreleme Motoru (BFE) hizmeti çalışmıyor (hata 1753). 'Base Filtering Engine' hizmetini başlatın.",
-        _ => $"WinDivert açılamadı: {new Win32Exception(code).Message} (hata {code}).",
-    };
+    /// <summary>Explanation of a WinDivertOpen failure code in the UI language (keys "ErrOpen{code}").</summary>
+    public static string DescribeOpenError(int code) =>
+        LiDPI.UI.Strings.ErrOpen(code, () => new Win32Exception(code).Message);
 }
 
 /// <summary>
@@ -239,11 +226,23 @@ internal static class WinDivertLoader
     /// Creates (or re-secures) a directory so only SYSTEM/Administrators can write and Users can read/execute.
     /// Junctions/symlinks planted in its place are removed first.
     /// </summary>
-    private static void PrepareSecureDirectory(string dir)
+    internal static void PrepareSecureDirectory(string dir)
     {
-        // Walk from %ProgramData%\LiDPI down; refuse reparse points anywhere on that chain.
+        // Walk from %ProgramData%\LiDPI down to dir; refuse reparse points anywhere on that chain.
         string root = Path.GetDirectoryName(BaseDirectory)!; // ...\LiDPI
-        foreach (var d in new[] { root, BaseDirectory, dir }.Distinct(StringComparer.OrdinalIgnoreCase))
+        string full = Path.GetFullPath(dir);
+        string rel = Path.GetRelativePath(root, full);
+        if (rel.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(rel))
+            throw new ArgumentException("directory must be under " + root, nameof(dir));
+        var chain = new List<string> { root };
+        var cur = root;
+        foreach (var part in rel.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (part == ".") continue;
+            cur = Path.Combine(cur, part);
+            chain.Add(cur);
+        }
+        foreach (var d in chain)
         {
             var info = new DirectoryInfo(d);
             if (info.Exists && info.Attributes.HasFlag(FileAttributes.ReparsePoint))
@@ -317,7 +316,7 @@ internal static class WinDivertLoader
     private static byte[] ReadResource(Assembly asm, string name)
     {
         using var s = asm.GetManifestResourceStream(name)
-            ?? throw new FileNotFoundException($"Gömülü kaynak bulunamadı: {name}");
+            ?? throw new FileNotFoundException(LiDPI.UI.Strings.ErrResourceMissing(name));
         using var ms = new MemoryStream((int)s.Length);
         s.CopyTo(ms);
         return ms.ToArray();
@@ -395,7 +394,7 @@ internal static class DriverServices
         {
             if (!QueryServiceStatus(svc, out var st) || st.CurrentState == ServiceStopped) return;
             if (ControlService(svc, ServiceControlStop, out _))
-                log?.Invoke($"'{name}' sürücü hizmeti durduruldu.");
+                log?.Invoke(LiDPI.UI.Strings.LogDriverStopped(name));
             // failure usually means another program still holds a handle: leave it alone
         });
     }
@@ -425,9 +424,9 @@ internal static class DriverServices
                 {
                     if (!QueryServiceStatus(svc, out var st) || st.CurrentState != ServiceStopped) return;
                     if (DeleteService(svc))
-                        log?.Invoke($"Eski '{serviceName}' sürücü hizmeti silindi (farklı konumu gösteriyordu: {image.Trim()}).");
+                        log?.Invoke(LiDPI.UI.Strings.LogDriverStaleDeleted(serviceName, image.Trim()));
                     else
-                        log?.Invoke($"Eski '{serviceName}' sürücü hizmeti silinemedi (hata {Marshal.GetLastPInvokeError()}).");
+                        log?.Invoke(LiDPI.UI.Strings.LogDriverStaleDeleteFailed(serviceName, Marshal.GetLastPInvokeError()));
                 }
                 finally { CloseServiceHandle(svc); }
             }
