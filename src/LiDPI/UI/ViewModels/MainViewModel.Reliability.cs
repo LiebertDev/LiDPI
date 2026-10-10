@@ -63,6 +63,7 @@ public sealed partial class MainViewModel
         _reconnectRetry?.Stop();
         _healthTimer?.Stop();
         try { _healthCts?.Cancel(); } catch (ObjectDisposedException) { /* finished */ }
+        DisposeGuard();
     }
 
     // ===================== first run =====================
@@ -142,7 +143,7 @@ public sealed partial class MainViewModel
             AddLog(new LogEntry(DateTime.Now, "Info", Strings.LogReconnectNoNetwork));
             return;   // the "available again" event brings us back here
         }
-        _ = ReconnectAsync(reason == NetworkChangeReason.Resume ? Strings.ReasonResume : Strings.ReasonNetwork);
+        _ = ReconnectAsync(reason == NetworkChangeReason.Resume ? Strings.ReasonResume : Strings.ReasonNetwork, StartOrigin.Background);
     }
 
     private void ScheduleReconnectRetry(NetworkChangeReason reason, TimeSpan delay)
@@ -162,13 +163,14 @@ public sealed partial class MainViewModel
     }
 
     /// <summary>Restart the engine with the current settings, then flush the system DNS cache.</summary>
-    private async Task ReconnectAsync(string reason)
+    private async Task ReconnectAsync(string reason, StartOrigin origin)
     {
         _lastReconnectUtc = DateTime.UtcNow;
         _healthBlockedStreak = 0;
         AddLog(new LogEntry(DateTime.Now, "Info", Strings.LogReconnecting(reason)));
-        await ConnectAsync();
+        await ConnectAsync(origin);
         _lastReconnectUtc = DateTime.UtcNow;
+        if (!_wantRunning) return;   // held by a guard (game / other DPI tool): nothing was restarted
         if (await Task.Run(LiDPI.Dns.DnsCache.Flush))
             AddLog(new LogEntry(DateTime.Now, "Info", Strings.LogDnsFlushed));
     }
@@ -345,7 +347,7 @@ public sealed partial class MainViewModel
     public void HealthWarningReconnect()
     {
         ShowHealthWarning = false;
-        _ = ReconnectAsync(Strings.HealthWarnReconnect);
+        _ = ReconnectAsync(Strings.HealthWarnReconnect, StartOrigin.User);
     }
 
     public void DismissHealthWarning()

@@ -62,13 +62,13 @@ body:
     id: version
     attributes:
       label: LiDPI sürümü / LiDPI version
-      placeholder: "1.1.0"
+      placeholder: "1.1.1"
   - type: checkboxes
     id: checks
     attributes:
       label: Kontrol listesi / Checklist
       options:
-        - label: Başka bir DPI aracı (GoodbyeDPI, zapret vb.) çalışmıyor. / No other DPI tool (GoodbyeDPI, zapret, …) is running.
+        - label: Başka bir DPI aracı çalışmıyor. / No other DPI tool is running.
           required: false
         - label: "\"En iyi ayarı otomatik bul\"u denedim. / I tried \"Auto-find best settings\"."
           required: false

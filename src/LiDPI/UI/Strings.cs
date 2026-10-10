@@ -96,6 +96,49 @@ public static class Strings
     public static string LogHealthBlocked => L();
     public static string LogHealthOffline => L();
 
+    // ===== game protection / conflicting DPI tools =====
+    public static string GameActionPause => L();
+    public static string GameActionBrowser => L();
+    public static string GameActionNothing => L();
+    public static string GameBalloonTitle => L();
+    /// <summary>{0}: anti-cheat name ("Riot Vanguard").</summary>
+    public static string GameStartHeldText(string antiCheat) => F([antiCheat]);
+    public static string GameStartHeldResumeText(string antiCheat) => F([antiCheat]);
+    public static string GameStartBrowserText(string antiCheat) => F([antiCheat]);
+    /// <summary>{0}: game name ("League of Legends").</summary>
+    public static string GamePausedText(string game) => F([game]);
+    public static string GameSwitchedText(string game) => F([game]);
+    public static string GameNotifiedText(string game) => F([game]);
+    public static string GameResumedText => L();
+    public static string GameRestoredText => L();
+    public static string LogGameDetected(string game, string antiCheat) => F([game, antiCheat]);
+    public static string LogGamePaused(string game) => F([game]);
+    public static string LogGameSwitched(string game) => F([game]);
+    public static string LogGameStartHeld(string antiCheat) => F([antiCheat]);
+    public static string LogGameOverride(string game) => F([game]);
+    public static string LogGameIgnored(string game) => F([game]);
+    public static string LogGameEnded => L();
+    public static string ConflictBalloonTitle => L();
+    /// <summary>{0}: what was found ("tool.exe, WinDivert1.4 (driver)").</summary>
+    public static string ConflictText(string tools) => F([tools]);
+    public static string ConflictStoppedText(string tools) => F([tools]);
+    public static string ConflictHeldBalloon(string tools) => F([tools]);
+    public static string ConflictFailedText(string tools) => F([tools]);
+    public static string ConflictServiceName(string service) => F([service]);
+    public static string ConflictDriverName(string service) => F([service]);
+    public static string LogConflictHeld(string tools) => F([tools]);
+    public static string LogConflictStopped(string tools) => F([tools]);
+    public static string LogConflictProxy(string tools) => F([tools]);
+    public static string LogConflictUserResolve(string tools) => F([tools]);
+    public static string LogConflictServiceDisabled(string service) => F([service]);
+    public static string LogConflictServiceDisableFailed(string service, int error) => F([service, error]);
+    public static string LogConflictServiceStopped(string service) => F([service]);
+    public static string LogConflictServiceStopFailed(string service, int error) => F([service, error]);
+    public static string LogConflictProcessEnded(string process, int pid) => F([process, pid]);
+    public static string LogConflictProcessEndFailed(string process, string error) => F([process, error]);
+    public static string LogConflictResolved => L();
+    public static string LogConflictStill(string tools) => F([tools]);
+
     // ===== settings =====
     public static string SettingStartWithWindows => L();
     public static string LogAutostartOn => L();

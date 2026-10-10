@@ -64,7 +64,11 @@ DPI (derin paket inceleme) cihazları, bağlandığınız siteyi çoğunlukla TL
 LiDPI'nin dijital imzası yok ve henüz çok indirilmemiş bir program. SmartScreen bu yüzden uyarır. Dosyayı Releases sayfasından indirdiyseniz ve SHA256 değeri tutuyorsa "Ek bilgi" → "Yine de çalıştır" diyerek açabilirsiniz.
 
 **Başka bir DPI aracıyla birlikte kullanabilir miyim?**
-Hayır. Bu tür araçlar aynı paketlere müdahale ettiği için birbirini bozar. LiDPI'yi açmadan önce diğer araçları kapatın, varsa hizmetlerini durdurun. LiDPI çakışan bir araç görürse kayıtlarda uyarır.
+Hayır. İki araç aynı paketleri aynı anda değiştirince bağlantı tamamen kopar, siteler de oyunlar da açılmaz. LiDPI başka bir DPI aracının açık olduğunu görürse "Tüm Uygulamalar" modunu başlatmaz, çalışırken biri açılırsa da kendini hemen durdurur. Çıkan pencerede "Kapat ve devam et" derseniz o programı (varsa hizmetini) kapatır, sonra bağlanır. İsterseniz hizmetin Windows ile başlamasını da kapatabilirsiniz, hiçbir şey silinmez. Siz düğmeye basmadan LiDPI başka bir programı kapatmaz.
+
+**LoL / VALORANT (Vanguard), FACEIT, EAC veya BattlEye kullanan oyunlarla kullanabilir miyim?**
+Bu oyunların hile korumaları Windows çekirdeğinde çalışır. Oyun açıkken bir ağ sürücüsü yüklenirse bunu sorun sayıp oyunu kapatabilirler. "Tüm Uygulamalar" modu da WinDivert sürücüsünü yükler. Bu yüzden LiDPI'de oyun koruması var ve varsayılan olarak açık: böyle bir oyun açıkken sürücüyü yüklemez, LiDPI çalışırken oyun açılırsa kendini duraklatır, oyun kapanınca da kaldığı yerden devam eder. Ayarlar → Oyun koruması bölümünden duraklatmak yerine "Sadece Tarayıcı" moduna geçmesini de seçebilirsiniz.
+"Sadece Tarayıcı" modu sürücü yüklemez, ama Riot'un destek sayfası VPN ve proxy programlarını da olası sorunlar arasında sayıyor. Ban riski hakkında güvenilir bir bilgi yok. En güvenlisi oyun oynarken LiDPI'yi tamamen kapatmak. Vanguard bir VAN hatası gösterirse LiDPI'yi kapatıp bilgisayarı yeniden başlatın.
 
 **İnternetim yavaşlar mı?**
 LiDPI yalnızca bağlantıların ilk paketlerine dokunur. Günlük kullanımda fark edilir bir yavaşlama olmaz.
@@ -161,7 +165,10 @@ All apps mode does this at packet level with WinDivert. Browser only mode applie
 
 **Windows SmartScreen says it protected my PC.** LiDPI isn't code-signed and isn't downloaded often enough yet, so SmartScreen warns about it. If you got the file from the Releases page and the SHA256 matches, click "More info" → "Run anyway".
 
-**Can I use it together with another DPI tool?** No. They interfere with the same packets and break each other. Close other tools (and stop their services) first. LiDPI warns in the logs if it sees one.
+**Can I use it together with another DPI tool?** No. When two tools rewrite the same packets at once, the connection dies completely. If LiDPI sees another DPI tool running, it won't start All apps mode, and if one starts while LiDPI is running, it stops right away. In the window that pops up, "Close and continue" closes that program (and its service, if it has one) and then connects. You can also stop the service from starting with Windows; nothing gets deleted. LiDPI never closes another program unless you press that button.
+
+**Can I play LoL / VALORANT (Vanguard), FACEIT, EAC or BattlEye games with it?** These anti-cheats run in the Windows kernel. If a network driver loads while the game is open, they may treat it as a problem and close the game, and All apps mode loads the WinDivert driver. That's why LiDPI has game protection, on by default: it won't load the driver while such a game is open, pauses itself when one starts, and picks up again after the game closes. Under Settings → Game protection you can have it switch to Browser only mode instead of pausing.
+Browser only mode loads no driver, but Riot's support page lists VPN and proxy software as possible issues too. Nobody really knows the ban risk. The safest option is to close LiDPI completely while you play. If Vanguard shows a VAN error, close LiDPI and restart your PC.
 
 **Will it slow down my internet?** No. LiDPI only touches the first packets of a connection.
 

@@ -58,6 +58,15 @@ public sealed class AppSettings
     /// <summary>Optional bootstrap IP of the custom DoH provider; empty = resolve the host once via system DNS at engine start.</summary>
     public string? CustomDohBootstrap { get; set; }
 
+    /// <summary>Game protection: never load the packet driver next to a game with a kernel anti-cheat.</summary>
+    public bool GameGuard { get; set; } = true;
+
+    /// <summary>What game protection does when such a game starts while the packet engine runs.</summary>
+    public GameAction GameGuardAction { get; set; } = GameAction.Pause;
+
+    /// <summary>Go back to the previous mode / reconnect when the game has closed.</summary>
+    public bool GameGuardResume { get; set; } = true;
+
     /// <summary>Load settings; returns defaults if the file is missing or corrupt.</summary>
     public static AppSettings Load()
     {
@@ -71,6 +80,7 @@ public sealed class AppSettings
                 if (!json.Contains($"\"{nameof(FirstRunCompleted)}\"", StringComparison.Ordinal))
                     s.FirstRunCompleted = true;
                 if (s.HealthCheckMinutes is not (0 or 5 or 15)) s.HealthCheckMinutes = 5;
+                if (!Enum.IsDefined(s.GameGuardAction)) s.GameGuardAction = GameAction.Pause;
                 if (s.TestSites is { } sites)
                 {
                     var clean = ProbeTargets.Sanitize(sites);

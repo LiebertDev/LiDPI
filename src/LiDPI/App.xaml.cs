@@ -75,7 +75,7 @@ public partial class App : Application
         else MemoryTrimmer.TrimSoon(TimeSpan.FromSeconds(15));   // drop start-up garbage once things settle
 
         _ = _vm.SyncAutostartAsync();
-        if (settings.AutoConnectOnLaunch) _ = _vm.ConnectAsync();
+        if (settings.AutoConnectOnLaunch) _ = _vm.ConnectAsync(StartOrigin.Background);
         _vm.StartBackgroundServices();
     }
 

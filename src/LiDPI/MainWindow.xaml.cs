@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private bool _settingsOpen;
     private bool _logsOpen;
     private bool _autoFindOpen;
+    private bool _guardOpen;
 
     public MainWindow(MainViewModel vm)
     {
@@ -94,6 +95,7 @@ public partial class MainWindow : Window
         _vm.AutoFindRows.CollectionChanged -= OnAutoFindRowsChanged;
         _vm.IsViewActive = false;
         StopShimmer();
+        GuardIconPulse.BeginAnimation(OpacityProperty, null);
         base.OnClosed(e);
     }
 
@@ -103,7 +105,8 @@ public partial class MainWindow : Window
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Escape) return;
-        if (_autoFindOpen) { AutoFindEscape(); e.Handled = true; }
+        if (_guardOpen) { GuardEscape(); e.Handled = true; }
+        else if (_autoFindOpen) { AutoFindEscape(); e.Handled = true; }
         else if (_logsOpen) { CloseLogs(); e.Handled = true; }
         else if (_settingsOpen) { CloseSettings(); e.Handled = true; }
         else if (_profilesOpen) { SetProfilesOpen(false); e.Handled = true; }
@@ -149,6 +152,7 @@ public partial class MainWindow : Window
             if (_vm.IsFirstRun) ShowFirstRunPrompt();
             if (_vm.ShowHealthWarning) ShowNotice(HealthWarnCard);
             if (_pendingToast is { } t) { _pendingToast = null; ShowToast(t); }
+            SyncGuardSheet();   // e.g. a conflict found by a background start while the window was closed
         });
 
         RestoreAutoFindSheet();
@@ -187,6 +191,9 @@ public partial class MainWindow : Window
                 break;
             case nameof(MainViewModel.AutoFindProgress):
                 AnimateAutoFindBar();
+                break;
+            case nameof(MainViewModel.GuardSheet):
+                if (_entranceDone) SyncGuardSheet();
                 break;
             case nameof(MainViewModel.ShowHealthWarning):
                 if (!_entranceDone) break;
@@ -367,7 +374,7 @@ public partial class MainWindow : Window
     {
         if (!_vm.CanAutoFind) return;
         if (_profilesOpen) SetProfilesOpen(false);
-        OpenAutoFind();
+        // the sheet opens when the run actually begins (the guard gate may ask something first)
         _ = _vm.StartAutoFindAsync();
     }
 
@@ -539,6 +546,76 @@ public partial class MainWindow : Window
         }, System.Windows.Threading.DispatcherPriority.Background);
     }
 
+    // ===================== guard sheet (games with anti-cheat, other DPI tools) =====================
+
+    private void GuardBrowser_Click(object sender, RoutedEventArgs e) => _vm.GuardSwitchToBrowser();
+    private void GuardAnyway_Click(object sender, RoutedEventArgs e) => _vm.GuardStartAnyway();
+    private void GuardDismiss_Click(object sender, RoutedEventArgs e) => _vm.DismissGuardSheet();
+    private void ConflictClose_Click(object sender, RoutedEventArgs e) => _ = _vm.ConflictCloseAndContinueAsync();
+
+    private void GuardBackdrop_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        // a stray click only closes the informational faces; a question needs an answer
+        if (_vm.IsGuardInfoSheet) _vm.DismissGuardSheet();
+    }
+
+    private void GuardEscape()
+    {
+        if (!_vm.ConflictBusy) _vm.DismissGuardSheet();
+    }
+
+    /// <summary>Opens/closes the sheet to match the view model (also after the window was rebuilt from the tray).</summary>
+    private void SyncGuardSheet()
+    {
+        if (_vm.GuardSheet == GuardSheetKind.None) CloseGuard();
+        else OpenGuard();
+    }
+
+    private void OpenGuard()
+    {
+        if (_guardOpen)
+        {
+            // face changed while open (e.g. failed "close and continue"): a small nudge instead of a re-slide
+            GuardContentY.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(10, 0, TimeSpan.FromMilliseconds(380)) { EasingFunction = EaseOut });
+            GuardContent.BeginAnimation(OpacityProperty, new DoubleAnimation(0.2, 1, TimeSpan.FromMilliseconds(380)) { EasingFunction = EaseOut });
+            return;
+        }
+        _guardOpen = true;
+        if (_profilesOpen) SetProfilesOpen(false);
+        GuardOverlay.Visibility = Visibility.Visible;
+        var dur = TimeSpan.FromMilliseconds(440);
+        GuardBackdrop.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(260)));
+        GuardSheetY.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(GuardSlide, 0, dur) { EasingFunction = EaseOut });
+
+        // icon pops in, then one soft ring
+        var pop = new DoubleAnimation(0.4, 1, TimeSpan.FromMilliseconds(560)) { BeginTime = TimeSpan.FromMilliseconds(160), EasingFunction = PopEase };
+        GuardIconScale.BeginAnimation(ScaleTransform.ScaleXProperty, pop);
+        GuardIconScale.BeginAnimation(ScaleTransform.ScaleYProperty, pop);
+        var ringBegin = TimeSpan.FromMilliseconds(420);
+        var ringDur = TimeSpan.FromMilliseconds(950);
+        var grow = new DoubleAnimation(1, 1.6, ringDur) { BeginTime = ringBegin, EasingFunction = EaseOut };
+        GuardRingScale.BeginAnimation(ScaleTransform.ScaleXProperty, grow);
+        GuardRingScale.BeginAnimation(ScaleTransform.ScaleYProperty, grow);
+        GuardIconPulse.BeginAnimation(OpacityProperty, new DoubleAnimation(0.8, 0, ringDur) { BeginTime = ringBegin, EasingFunction = EaseOut });
+    }
+
+    private void CloseGuard()
+    {
+        if (!_guardOpen) return;
+        _guardOpen = false;
+        var dur = TimeSpan.FromMilliseconds(320);
+        GuardBackdrop.BeginAnimation(OpacityProperty, new DoubleAnimation(0, dur));
+        var slide = new DoubleAnimation(GuardSlide, dur) { EasingFunction = EaseInOut };
+        slide.Completed += (_, _) =>
+        {
+            if (!_guardOpen) GuardOverlay.Visibility = Visibility.Hidden;
+        };
+        GuardSheetY.BeginAnimation(TranslateTransform.YProperty, slide);
+    }
+
+    /// <summary>Slide distance: the sheet's own height (auto-sized) or a safe default before the first layout.</summary>
+    private double GuardSlide => GuardSheet.ActualHeight > 0 ? GuardSheet.ActualHeight + 4 : 460;
+
     // ===================== notices (first run, health, toast) =====================
 
     /// <summary>Entrance: last item starts at 60 + 6 x 65 ms and runs 620 ms.</summary>
@@ -567,7 +644,6 @@ public partial class MainWindow : Window
         HideNotice(FirstRunCard);
         if (_vm.CanAutoFind)
         {
-            OpenAutoFind();
             _ = _vm.StartAutoFindAsync();
         }
         else
@@ -587,7 +663,6 @@ public partial class MainWindow : Window
     {
         if (!_vm.CanAutoFind) return;
         if (_profilesOpen) SetProfilesOpen(false);
-        OpenAutoFind();
         _vm.HealthWarningAutoFind();
     }
 

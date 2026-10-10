@@ -75,6 +75,16 @@ public static partial class DiagnosticReport
         Line(sb, "IPv6 global connectivity", Safe(() => HasGlobalIpv6() ? "yes" : "no"));
         Line(sb, "Network available", Safe(() => NetworkInterface.GetIsNetworkAvailable() ? "yes" : "no"));
 
+        Section(sb, "Game protection / other DPI tools");
+        Line(sb, "Anti-cheat services installed", Safe(() => AntiCheatWatcher.InstalledServices() is { Count: > 0 } a ? string.Join(", ", a) : "none"));
+        Line(sb, "Protected games running", Safe(() => AntiCheatWatcher.RunningTriggers() is { Count: > 0 } r ? string.Join(", ", r) : "none"));
+        Line(sb, "DPI tool conflicts", Safe(() =>
+        {
+            // drivers are listed too; while LiDPI's own engine runs, a "WinDivert (driver)" entry is LiDPI itself
+            var c = DpiConflicts.Scan(AntiCheatWatcher.ListProcessNames(), includeDrivers: true);
+            return c.Count == 0 ? "none" : string.Join(", ", c.Select(i => $"{i.Kind}:{i.Name}"));
+        }));
+
         Section(sb, "Last health check");
         sb.AppendLine(string.IsNullOrEmpty(s.LastHealth) ? "(none)" : s.LastHealth);
 

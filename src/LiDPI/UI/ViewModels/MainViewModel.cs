@@ -57,6 +57,7 @@ public sealed partial class MainViewModel : ObservableObject
                        ?? DohProviderList[0];
         InitFeatures();
         InitLanguage();
+        InitGuard();
         _startWithWindows = settings.StartWithWindows;
 
         _timer = new DispatcherTimer(DispatcherPriority.Background, _dispatcher) { Interval = TimeSpan.FromSeconds(1) };
@@ -236,25 +237,33 @@ public sealed partial class MainViewModel : ObservableObject
     // Engine start/stop can do synchronous work (driver load, proxy setup) before its first await:
     // run it on the thread pool, serialised in call order, so the UI thread never stalls mid-animation.
     // While the auto-find probe owns the packet driver, the controller's engine must stay off.
+    // Every start passes the guard gate (other DPI tools, games with kernel anti-cheats) before the engine is touched.
     public Task ToggleAsync()
     {
         if (IsAutoFinding) return Task.CompletedTask;
-        _wantRunning = !IsActive;
-        var (m, p) = (Mode, EffectiveProfile);
-        return RunEngine(() => _controller.ToggleAsync(m, p));
+        return IsActive ? DisconnectAsync() : ConnectAsync(StartOrigin.User);
     }
 
-    public Task ConnectAsync()
+    public async Task ConnectAsync(StartOrigin origin = StartOrigin.User)
     {
-        if (IsAutoFinding) return Task.CompletedTask;
+        if (IsAutoFinding) return;
+        var serial = ++_intentSerial;   // a later connect/disconnect wins over this one while the gate looks around
+        if (!await GuardGateAsync(origin, autoFind: false, serial)) return;
+        if (serial != _intentSerial || IsAutoFinding) return;
         _wantRunning = true;
+        _gamePaused = false;
         var (m, p) = (Mode, EffectiveProfile);
-        return RunEngine(() => _controller.StartAsync(m, p));
+        await RunEngine(() => _controller.StartAsync(m, p));
     }
 
     public Task DisconnectAsync()
     {
+        _intentSerial++;
         _wantRunning = false;
+        // the user turned it off: no automatic restart after a game, and "start anyway" is asked again next time
+        _gamePaused = false;
+        _gameOverride = false;
+        CancelGameResume();
         return RunEngine(_controller.StopAsync);
     }
 
@@ -266,7 +275,14 @@ public sealed partial class MainViewModel : ObservableObject
         return t;
     }
 
+    /// <summary>User's choice of mode: it also ends a temporary switch made by game protection.</summary>
     private void SetMode(EngineMode mode)
+    {
+        _gameSwitched = false;
+        SetModeCore(mode, restart: true);
+    }
+
+    private void SetModeCore(EngineMode mode, bool restart)
     {
         if (_settings.Mode == mode) return;
         _settings.Mode = mode;
@@ -277,7 +293,7 @@ public sealed partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(Subtitle));
         OnPropertyChanged(nameof(CanAutoFind));
         OnPropertyChanged(nameof(AutoFindToolTip));
-        RestartIfRunning();
+        if (restart) RestartIfRunning();
     }
 
     private void RestartIfRunning()
@@ -342,6 +358,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         State = s;
         OnEngineStateForReliability(s);
+        UpdateGuardWatch();
         UpdateTimer();
         RefreshLive();
     }
@@ -466,6 +483,7 @@ public sealed partial class MainViewModel : ObservableObject
             OnPropertyChanged(nameof(CanAutoFind));
             CommandManager.InvalidateRequerySuggested();
             RestartHealthTimer(first: _lastHealthUtc is null);
+            UpdateGuardWatch();
         }
     }
 
@@ -511,6 +529,9 @@ public sealed partial class MainViewModel : ObservableObject
     public async Task StartAutoFindAsync()
     {
         if (!CanAutoFind) return;
+        // the probe loads the packet driver too: same checks as a Divert start (a sheet asks if something is in the way)
+        var serial = ++_intentSerial;
+        if (!await GuardGateAsync(StartOrigin.User, autoFind: true, serial) || serial != _intentSerial || !CanAutoFind) return;
 
         var doh = _selectedDoh.Key;
         var variants = AutoFind.QuickCandidates()
