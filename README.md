@@ -16,6 +16,7 @@
 - **Hazır profiller.** Türkiye Standart, Hafif, Agresif, Superonline ve Türk Telekom.
 - **En iyi ayarı otomatik bul.** Birkaç ayarı test sitelerinde dener ve hattınızda çalışan en hızlısını seçer. Hazır profillerden biri kazanmazsa bulduğu ayarı "Otomatik (hattıma özel)" adıyla kaydeder. Test yaklaşık iki dakika sürer, bu sırada internet birkaç kez kısa süreliğine kesilebilir. Yalnızca "Tüm Uygulamalar" modunda çalışır.
 - **Şifreli DNS (DoH).** Cloudflare, Google, Quad9, AdGuard ya da kendi DoH adresiniz. Özel adres için isteğe bağlı bir başlangıç IP'si girebilir, "Test et" ile deneyebilirsiniz.
+- **Hızlı DNS.** İsterseniz DNS sorguları şifresiz UDP ile Yandex DNS'e (1253 numaralı port) yönlendirilir. DoH'tan daha hızlıdır ama şifreli değildir. Yalnızca "Tüm Uygulamalar" modunda çalışır.
 - **Kendi test siteleriniz.** Otomatik bulma ve bağlantı kontrolünün denediği siteleri Ayarlar → Test siteleri bölümünden değiştirebilirsiniz.
 - **Bağlantı kontrolü.** Bağlıyken engelli sitelerin hâlâ açıldığını 5 ya da 15 dakikada bir kontrol eder. Art arda iki kez açılmazlarsa haber verir.
 - **Ağ değişince yeniden bağlanma.** Wi-Fi değiştiğinde ya da bilgisayar uykudan uyandığında korumayı kendisi yeniden başlatır.
@@ -50,7 +51,7 @@ DPI (derin paket inceleme) cihazları, bağlandığınız siteyi çoğunlukla TL
 
 - **ClientHello'yu bölme.** Bağlantının ilk paketi, site adı tek parçada görünmeyecek şekilde bölünür.
 - **Düşük TTL'li sahte paket.** Önce, sunucuya varmadan yolda düşecek kadar kısa ömürlü sahte bir paket gönderilir. DPI cihazı bunu gerçek trafik sanar.
-- **QUIC engelleme.** Tarayıcıların UDP/443 (QUIC) denemeleri engellenir. Böylece trafik yukarıdaki yöntemlerin işlediği TCP/TLS'e geçer.
+- **QUIC engelleme (yalnızca Agresif profilde).** Tarayıcıların UDP/443 (QUIC) denemeleri engellenir ve tarayıcıya hemen "ulaşılamıyor" yanıtı verilir. Böylece trafik beklemeden yukarıdaki yöntemlerin işlediği TCP/TLS'e geçer.
 - **DNS over HTTPS.** DNS sorguları şifreli olarak seçtiğiniz DoH sağlayıcısına gider. DNS ile yapılan engelleme ve yönlendirme işe yaramaz.
 
 "Tüm Uygulamalar" modu bunları WinDivert sürücüsüyle paket düzeyinde yapar. "Sadece Tarayıcı" modu ise sürücü kurmadan, yerel bir proxy üzerinden benzer bölme yöntemlerini uygular.
@@ -70,8 +71,10 @@ Hayır. İki araç aynı paketleri aynı anda değiştirince bağlantı tamamen 
 Bu oyunların hile korumaları Windows çekirdeğinde çalışır. Oyun açıkken bir ağ sürücüsü yüklenirse bunu sorun sayıp oyunu kapatabilirler. "Tüm Uygulamalar" modu da WinDivert sürücüsünü yükler. Bu yüzden LiDPI'de oyun koruması var ve varsayılan olarak açık: böyle bir oyun açıkken sürücüyü yüklemez, LiDPI çalışırken oyun açılırsa kendini duraklatır, oyun kapanınca da kaldığı yerden devam eder. Ayarlar → Oyun koruması bölümünden duraklatmak yerine "Sadece Tarayıcı" moduna geçmesini de seçebilirsiniz.
 "Sadece Tarayıcı" modu sürücü yüklemez, ama Riot'un destek sayfası VPN ve proxy programlarını da olası sorunlar arasında sayıyor. Ban riski hakkında güvenilir bir bilgi yok. En güvenlisi oyun oynarken LiDPI'yi tamamen kapatmak. Vanguard bir VAN hatası gösterirse LiDPI'yi kapatıp bilgisayarı yeniden başlatın.
 
-**İnternetim yavaşlar mı?**
-LiDPI yalnızca bağlantıların ilk paketlerine dokunur. Günlük kullanımda fark edilir bir yavaşlama olmaz.
+**LiDPI yavaş mı? İnternetim yavaşlar mı?**
+LiDPI yalnızca bağlantıların ilk paketlerine dokunur. Günlük kullanımda fark edilir bir yavaşlama olmaz. Yine de sayfalar geç açılıyorsa:
+- DNS ayarında **Hızlı DNS**'i deneyin. Şifreli DoH'tan daha hızlıdır ama sorgular şifresiz gider. DoH cevapları da bir süre hafızada tutulur, aynı site ikinci seferde hemen açılır.
+- QUIC yalnızca Agresif profilde engellenir. Diğer profillerde tarayıcınız QUIC'i kullanabilir, bu da çoğu sitede daha hızlıdır. Agresif profilde tarayıcı beklemeden TCP'ye geçer.
 
 **Hangi Windows hesabıyla çalıştırmalıyım?**
 Kendi hesabınızla (yönetici izni alabilen bir hesap) çalıştırın. İzin isteminde başka bir yönetici hesabının bilgilerini girerseniz program o hesap adına çalışır ve "Sadece Tarayıcı" modunun proxy ayarı sizin hesabınıza değil, o hesaba uygulanır.
@@ -86,7 +89,7 @@ Bazı hatlarda Discord IP adresi üzerinden engellenir. Bu durumda paket hileler
 
 LiDPI hiçbir veri toplamaz ve hiçbir yere göndermez. Telemetri, analiz ya da hesap yoktur. Programın kurduğu bağlantılar yalnızca şunlardır:
 
-- seçtiğiniz DoH sağlayıcısına DNS sorguları,
+- seçtiğiniz DoH sağlayıcısına DNS sorguları (Hızlı DNS seçiliyse Yandex DNS'e şifresiz DNS sorguları),
 - otomatik bulma ve bağlantı kontrolü sırasında test sitelerinize (ve karşılaştırma için `www.google.com`'a) bağlantı denemeleri,
 - yalnızca "Güncellemeleri denetle" düğmesine bastığınızda GitHub'a (`api.github.com`) sürüm kontrolü. LiDPI kendi başına güncelleme denetlemez, bir şey de indirmez. Yeni sürüm varsa sayfası tarayıcınızda açılır.
 
@@ -131,6 +134,7 @@ LiDPI, bilgiye erişim ve gizlilik için yazıldı. Program olduğu gibi sunulur
 - **Preset profiles** tuned for Turkish ISPs: Türkiye Standard, Light, Aggressive, Superonline and Türk Telekom.
 - **Find the best setting automatically.** LiDPI tries a few settings against your test sites and picks the fastest one that works on your line. If none of the presets wins, it saves the result as "Auto (tuned for my line)". It takes about two minutes and your connection may drop for a moment a few times. All apps mode only.
 - **Encrypted DNS (DoH)** through Cloudflare, Google, Quad9, AdGuard or your own DoH address (with an optional bootstrap IP and a Test button).
+- **Fast DNS.** Optionally sends DNS lookups as plain UDP to Yandex DNS on port 1253. Faster than DoH, but not encrypted. All apps mode only.
 - **Your own test sites** for auto-find and the connection check (Settings → Test sites).
 - **Connection check.** While connected, LiDPI checks every 5 or 15 minutes that blocked sites still open, and tells you if they fail twice in a row.
 - **Reconnects** after a Wi-Fi change or when the PC wakes from sleep.
@@ -154,7 +158,7 @@ DPI boxes usually tell which site you're visiting from the **SNI** field at the 
 
 - **Splitting the ClientHello** so the site name never shows up in one piece.
 - **A low-TTL fake packet** sent first. It expires on the way and never reaches the server, but the DPI box reads it as real traffic.
-- **Blocking QUIC** (UDP/443), so browsers fall back to TCP/TLS where the tricks above work.
+- **Blocking QUIC** (UDP/443, Aggressive profile only). The browser is told right away that QUIC is unreachable, so it switches to TCP/TLS, where the tricks above work, without waiting.
 - **DNS over HTTPS**, so DNS-based blocking and redirects don't apply.
 
 All apps mode does this at packet level with WinDivert. Browser only mode applies similar splitting through a local proxy, without a driver.
@@ -170,7 +174,7 @@ All apps mode does this at packet level with WinDivert. Browser only mode applie
 **Can I play LoL / VALORANT (Vanguard), FACEIT, EAC or BattlEye games with it?** These anti-cheats run in the Windows kernel. If a network driver loads while the game is open, they may treat it as a problem and close the game, and All apps mode loads the WinDivert driver. That's why LiDPI has game protection, on by default: it won't load the driver while such a game is open, pauses itself when one starts, and picks up again after the game closes. Under Settings → Game protection you can have it switch to Browser only mode instead of pausing.
 Browser only mode loads no driver, but Riot's support page lists VPN and proxy software as possible issues too. Nobody really knows the ban risk. The safest option is to close LiDPI completely while you play. If Vanguard shows a VAN error, close LiDPI and restart your PC.
 
-**Will it slow down my internet?** No. LiDPI only touches the first packets of a connection.
+**Is LiDPI slow? Will it slow down my internet?** No. LiDPI only touches the first packets of a connection. If pages still feel slow to start, try **Fast DNS** in the DNS settings: it's faster than encrypted DoH, but your lookups travel unencrypted. DoH answers are also kept for a while, so a site opens faster the second time. QUIC is only blocked in the Aggressive profile; elsewhere your browser can use it, which is faster on most sites.
 
 **Which Windows account should I use?** Your own (one that can get admin rights). If you type in a different admin account at the prompt, the app runs as that account and Browser only mode sets the proxy for that account, not yours.
 
@@ -182,7 +186,7 @@ Browser only mode loads no driver, but Riot's support page lists VPN and proxy s
 
 LiDPI doesn't collect or send any data. No telemetry, no analytics, no accounts. The only connections it makes are:
 
-- DNS queries to the DoH provider you chose,
+- DNS queries to the DoH provider you chose (or, with Fast DNS, plain DNS queries to Yandex DNS),
 - test requests to your test sites (plus `www.google.com` as a control) during auto-find and the connection check,
 - a release check against GitHub (`api.github.com`), **only when you press "Check for updates"**. LiDPI never checks for updates on its own and never downloads anything. If there's a new version, its release page opens in your browser.
 

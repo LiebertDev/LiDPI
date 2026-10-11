@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -25,8 +26,12 @@ public sealed class ProxyEngine : IBypassEngine
     private static readonly TimeSpan TunnelIdleTimeout = Timeout.InfiniteTimeSpan;
     private static readonly TimeSpan HalfCloseTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan HappyEyeballsDelay = TimeSpan.FromMilliseconds(250);
-    private static readonly TimeSpan SegmentDelay = TimeSpan.FromMilliseconds(5);
+    private static readonly TimeSpan HappyEyeballsDelay = TimeSpan.FromMilliseconds(150);
+    /// <summary>
+    /// Gap between the two halves of a split write, so they leave as separate TCP segments. Spun, not slept:
+    /// a timer wait (Task.Delay) costs a whole Windows timer tick (~15 ms) per connection.
+    /// </summary>
+    private static readonly long SegmentGapTicks = Stopwatch.Frequency / 1000;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private BypassProfile _profile = BuiltInProfiles.Standard;
@@ -132,10 +137,15 @@ public sealed class ProxyEngine : IBypassEngine
         var p = _profile;
         Stats.Reset();
         _cts = new CancellationTokenSource();
-        if (p.Dns == DnsMode.DoH)
+        // "Hızlı DNS" (UDP redirect) needs the packet engine: the proxy resolves names itself, so it uses DoH
+        if (p.Dns is DnsMode.DoH or DnsMode.UdpRedirect)
         {
-            _resolver = new DohResolver(DohResolver.PrepareProvider(p.DohProviderName, m => Write("Info", m)));
+            _resolver = new DohResolver(DohResolver.PrepareProvider(p.DohProviderName, m => Write("Info", m)))
+            {
+                Ipv6Available = FastDns.HasGlobalIpv6(),
+            };
             _resolver.Warning += m => LimitedWrite("Warn", m);
+            _resolver.Warmup();
         }
 
         _listener = Bind(out int port);
@@ -357,9 +367,7 @@ public sealed class ProxyEngine : IBypassEngine
                 if (_profile.HttpHostTricks) HttpHostTrick.TryApply(newHead, out split);
                 if (split > 0 && split < newHead.Length)
                 {
-                    await SendAllAsync(server, newHead.AsMemory(0, split), cts.Token).ConfigureAwait(false);
-                    await Task.Delay(SegmentDelay, cts.Token).ConfigureAwait(false);
-                    await SendAllAsync(server, newHead.AsMemory(split), cts.Token).ConfigureAwait(false);
+                    await SendSplitAsync(server, newHead.AsMemory(0, split), newHead.AsMemory(split), cts.Token).ConfigureAwait(false);
                 }
                 else
                 {
@@ -440,9 +448,7 @@ public sealed class ProxyEngine : IBypassEngine
                     if (w > 0)
                     {
                         // first TLS record ends exactly at 'split'
-                        await SendAllAsync(server, tmp.AsMemory(0, split), ct).ConfigureAwait(false);
-                        await Task.Delay(SegmentDelay, ct).ConfigureAwait(false);
-                        await SendAllAsync(server, tmp.AsMemory(split, w - split), ct).ConfigureAwait(false);
+                        await SendSplitAsync(server, tmp.AsMemory(0, split), tmp.AsMemory(split, w - split), ct).ConfigureAwait(false);
                         return;
                     }
                 }
@@ -453,9 +459,7 @@ public sealed class ProxyEngine : IBypassEngine
             }
             if (split > 0)
             {
-                await SendAllAsync(server, data[..split], ct).ConfigureAwait(false);
-                await Task.Delay(SegmentDelay, ct).ConfigureAwait(false);
-                await SendAllAsync(server, data[split..], ct).ConfigureAwait(false);
+                await SendSplitAsync(server, data[..split], data[split..], ct).ConfigureAwait(false);
                 return;
             }
         }
@@ -534,7 +538,7 @@ public sealed class ProxyEngine : IBypassEngine
         return result;
     }
 
-    /// <summary>Staggered parallel connect: a new attempt starts every 250 ms until one succeeds.</summary>
+    /// <summary>Staggered parallel connect: a new attempt starts every 150 ms until one succeeds.</summary>
     private static async Task<Socket?> ConnectAnyAsync(List<IPAddress> addrs, int port, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -677,6 +681,21 @@ public sealed class ProxyEngine : IBypassEngine
         }
     }
 
+    /// <summary>Sends two parts as separate TCP segments (NoDelay is set on server sockets): first, ~1 ms gap, second.</summary>
+    private static async Task SendSplitAsync(Socket s, ReadOnlyMemory<byte> first, ReadOnlyMemory<byte> second, CancellationToken ct)
+    {
+        await SendAllAsync(s, first, ct).ConfigureAwait(false);
+        SegmentGap();
+        await SendAllAsync(s, second, ct).ConfigureAwait(false);
+    }
+
+    private static void SegmentGap()
+    {
+        long until = Stopwatch.GetTimestamp() + SegmentGapTicks;
+        var spin = new SpinWait();
+        while (Stopwatch.GetTimestamp() < until) spin.SpinOnce(sleep1Threshold: -1);
+    }
+
     private static void ShutdownSend(Socket s)
     {
         try { s.Shutdown(SocketShutdown.Send); } catch { /* already closed */ }
@@ -689,7 +708,7 @@ public sealed class ProxyEngine : IBypassEngine
         var t = new List<string>();
         if (p.SplitTlsHello) t.Add(p.SplitAtSni ? Strings.DescSplitSni : Strings.DescSplitAt(p.SplitPosition));
         if (p.HttpHostTricks) t.Add(Strings.DescHostTrick);
-        t.Add(p.Dns == DnsMode.DoH ? $"DoH: {DohResolver.FindProvider(p.DohProviderName).Name}" : Strings.DescSystemDns);
+        t.Add(p.Dns is DnsMode.DoH or DnsMode.UdpRedirect ? $"DoH: {DohResolver.FindProvider(p.DohProviderName).Name}" : Strings.DescSystemDns);
         return string.Join(", ", t);
     }
 

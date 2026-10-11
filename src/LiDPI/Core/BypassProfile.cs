@@ -55,11 +55,19 @@ public sealed record BypassProfile
     /// <summary>Host header case mix / space removal for plain HTTP.</summary>
     public bool HttpHostTricks { get; init; } = true;
 
-    /// <summary>Drop UDP/443 so apps fall back to TCP.</summary>
+    /// <summary>Block UDP/443 (QUIC) so apps fall back to TCP, where the ClientHello tricks apply.</summary>
     public bool BlockQuic { get; init; } = true;
 
     /// <summary>DNS resolution mode.</summary>
     public DnsMode Dns { get; init; } = DnsMode.DoH;
     /// <summary>Name of a <see cref="DohProviders"/> entry.</summary>
     public string DohProviderName { get; init; } = "Cloudflare";
+
+    /// <summary>IPv4 resolver ("ip:port") for <see cref="DnsMode.UdpRedirect"/>; null = <see cref="FastDns.DefaultV4"/>. Set per start from the settings.</summary>
+    [JsonIgnore]
+    public string? FastDnsServer { get; init; }
+
+    /// <summary>IPv6 resolver ("[ip]:port") for <see cref="DnsMode.UdpRedirect"/>; null = <see cref="FastDns.DefaultV6"/>.</summary>
+    [JsonIgnore]
+    public string? FastDnsServerV6 { get; init; }
 }

@@ -111,6 +111,29 @@ internal static class PacketBuilder
     public static int BuildUdpReply(ReadOnlySpan<byte> query, in PacketInfo pi, ReadOnlySpan<byte> payload, Span<byte> o) =>
         BuildUdp(o, DstAddr(query), SrcAddr(query), pi.DstPort, pi.SrcPort, payload);
 
+    public const byte ProtoIcmp = 1, ProtoIcmpV6 = 58;
+
+    /// <summary>
+    /// Builds an ICMP (type 3 code 3) / ICMPv6 (type 1 code 4) "port unreachable" from the destination of the
+    /// outbound UDP packet <paramref name="pkt"/> back to its sender, quoting the packet's IP and UDP headers.
+    /// The ICMP checksum is left to the sender. Returns the length, or 0 if it does not fit.
+    /// </summary>
+    public static int BuildPortUnreachable(ReadOnlySpan<byte> pkt, in PacketInfo pi, Span<byte> o)
+    {
+        bool v6 = pi.IsV6;
+        int ipLen = v6 ? 40 : 20;
+        int quote = Math.Min(pi.TotalLength, pi.L4Offset + 8);
+        int total = ipLen + 8 + quote;
+        if (total > o.Length) return 0;
+        WriteIpHeader(o, DstAddr(pkt), SrcAddr(pkt), v6 ? ProtoIcmpV6 : ProtoIcmp, total);
+        var icmp = o[ipLen..];
+        icmp[..8].Clear();
+        icmp[0] = v6 ? (byte)1 : (byte)3;   // destination unreachable
+        icmp[1] = v6 ? (byte)4 : (byte)3;   // port unreachable
+        pkt[..quote].CopyTo(icmp[8..]);
+        return total;
+    }
+
     /// <summary>
     /// Builds a TCP segment (no options, or a single MSS option when <paramref name="mss"/> is non-zero).
     /// Returns the length, or 0 if it does not fit.

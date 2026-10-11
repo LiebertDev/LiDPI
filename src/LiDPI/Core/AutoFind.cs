@@ -122,13 +122,18 @@ public static class AutoFind
     /// Short candidate list for the UI (~11 variants): every built-in profile plus the fake-TTL variants that
     /// differed most in <see cref="ProfileProbe.DefaultCandidates"/> runs. Built-ins come first so that on a tie
     /// in reach and latency a named profile wins.
+    /// <para>
+    /// No QUIC on/off pairs: the probe measures HTTPS over TCP (HTTP/2 / 1.1), so a QUIC variant always scores the
+    /// same as its twin and would only double the run time. Variants leave QUIC allowed, like the built-ins
+    /// (only "Agresif" blocks it).
+    /// </para>
     /// </summary>
     public static IReadOnlyList<ProbeVariant> QuickCandidates()
     {
         var s2d = new BypassProfile
         {
             Id = "probe", SplitTlsHello = true, SplitAtSni = false, SplitPosition = 2, DisorderSegments = true,
-            FakePacket = true, Dns = DnsMode.DoH, BlockQuic = true, HttpHostTricks = true,
+            FakePacket = true, Dns = DnsMode.DoH, BlockQuic = false, HttpHostTricks = true,
         };
         var list = new List<ProbeVariant>();
         foreach (var p in BuiltInProfiles.All) list.Add(new(p.DisplayName, p));
@@ -183,6 +188,7 @@ public static class AutoFind
         if (p.SplitTlsHello) parts.Add(p.SplitAtSni ? Strings.DescSplitSni : Strings.DescSplitAt(p.SplitPosition));
         if (p.DisorderSegments) parts.Add(Strings.DescDisorder);
         if (p.Dns == DnsMode.DoH) parts.Add("DoH");
+        else if (p.Dns == DnsMode.UdpRedirect) parts.Add(Strings.DescFastDns);
         if (p.BlockQuic) parts.Add(Strings.DescBlockQuic);
         return parts.Count == 0 ? Strings.DescPickedByTest : string.Join(" + ", parts);
     }

@@ -8,7 +8,7 @@ namespace LiDPI.Core;
 /// </summary>
 public static class BuiltInProfiles
 {
-    /// <summary>Fake (auto TTL, x2) + split at byte 2 + disorder + DoH + block QUIC.</summary>
+    /// <summary>Fake (auto TTL, x2) + split at byte 2 + disorder + DoH. QUIC stays allowed (faster; browsers use it when it works).</summary>
     public static BypassProfile Standard { get; } = new()
     {
         Id = "standard",
@@ -20,7 +20,7 @@ public static class BuiltInProfiles
         FakeTtl = 0,
         FakeRepeats = 2,
         Dns = DnsMode.DoH,
-        BlockQuic = true,
+        BlockQuic = false,
     };
 
     /// <summary>Split only + DoH (no decoy; weak against reassembling DPI).</summary>
@@ -29,6 +29,7 @@ public static class BuiltInProfiles
         Id = "light",
         SplitTlsHello = true,
         Dns = DnsMode.DoH,
+        BlockQuic = false,
     };
 
     /// <summary>Fake (auto TTL, x3) + split at byte 1 + disorder + DoH + block QUIC.</summary>
@@ -54,9 +55,10 @@ public static class BuiltInProfiles
         FakePacket = true,
         FakeTtl = 3,
         Dns = DnsMode.DoH,
+        BlockQuic = false,
     };
 
-    /// <summary>Fake TTL 5 + split at byte 2 + disorder + DoH + block QUIC (best probe result on TT).</summary>
+    /// <summary>Fake TTL 5 + split at byte 2 + disorder + DoH (best probe result on TT).</summary>
     public static BypassProfile Ttnet { get; } = new()
     {
         Id = "ttnet",
@@ -67,7 +69,7 @@ public static class BuiltInProfiles
         FakePacket = true,
         FakeTtl = 5,
         Dns = DnsMode.DoH,
-        BlockQuic = true,
+        BlockQuic = false,
     };
 
     /// <summary>All built-in profiles. Names and descriptions are in the language files ("Profile.{Id}.Name" / ".Desc").</summary>

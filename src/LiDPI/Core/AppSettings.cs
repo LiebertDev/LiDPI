@@ -58,6 +58,12 @@ public sealed class AppSettings
     /// <summary>Optional bootstrap IP of the custom DoH provider; empty = resolve the host once via system DNS at engine start.</summary>
     public string? CustomDohBootstrap { get; set; }
 
+    /// <summary>"Hızlı DNS" IPv4 resolver as "ip:port" (no UI; edit the file). Null = Yandex 77.88.8.8:1253.</summary>
+    public string? FastDnsServer { get; set; }
+
+    /// <summary>"Hızlı DNS" IPv6 resolver as "[ip]:port" (no UI). Null = Yandex [2a02:6b8::feed:0ff]:1253.</summary>
+    public string? FastDnsServerV6 { get; set; }
+
     /// <summary>Game protection: never load the packet driver next to a game with a kernel anti-cheat.</summary>
     public bool GameGuard { get; set; } = true;
 
@@ -89,6 +95,12 @@ public sealed class AppSettings
                 if (s.CustomDohUrl is { } du && !DohProviders.TryNormalizeUrl(du, out _, out _)) s.CustomDohUrl = null;
                 if (!string.IsNullOrWhiteSpace(s.CustomDohBootstrap) && !DohProviders.TryParseBootstrap(s.CustomDohBootstrap, out _))
                     s.CustomDohBootstrap = null;
+                if (!string.IsNullOrWhiteSpace(s.FastDnsServer) &&
+                    !FastDns.TryParse(s.FastDnsServer, System.Net.Sockets.AddressFamily.InterNetwork, out _))
+                    s.FastDnsServer = null;
+                if (!string.IsNullOrWhiteSpace(s.FastDnsServerV6) &&
+                    !FastDns.TryParse(s.FastDnsServerV6, System.Net.Sockets.AddressFamily.InterNetworkV6, out _))
+                    s.FastDnsServerV6 = null;
                 return s;
             }
         }

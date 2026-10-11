@@ -11,8 +11,9 @@ namespace LiDPI.Dns;
 
 /// <summary>
 /// DNS-over-HTTPS (RFC 8484) client. Connects to each provider's bootstrap IP directly, so it never
-/// depends on (possibly poisoned) system DNS. Falls back through <see cref="DohProviders.All"/>.
-/// Thread-safe.
+/// depends on (possibly poisoned) system DNS. Falls back through <see cref="DohProviders.All"/>, hedging a
+/// slow provider with the next one. Raw wire answers are cached (TTL-respecting, serve-stale) and identical
+/// in-flight queries share one upstream request. Thread-safe.
 /// </summary>
 public sealed class DohResolver : IDisposable
 {
@@ -21,14 +22,47 @@ public sealed class DohResolver : IDisposable
     private static readonly TimeSpan MaxTtl = TimeSpan.FromMinutes(30);
     private const int MaxCacheEntries = 4096;
 
+    // ---- wire-level answer cache (QueryRawAsync)
+    private const int MaxWireEntries = 8192;
+    private const uint WireMinTtl = 30, WireMaxTtl = 3600;          // positive answers
+    private const uint WireNegMinTtl = 30, WireNegMaxTtl = 300;     // NXDOMAIN / NODATA
+    private const uint StaleAnswerTtl = 30;
+    private static readonly long StaleWindowMs = (long)TimeSpan.FromDays(1).TotalMilliseconds;
+    /// <summary>Start the next provider in parallel when the current one has not answered after this long.</summary>
+    private static readonly TimeSpan HedgeDelay = TimeSpan.FromMilliseconds(300);
+    /// <summary>Budget for one upstream resolution across all providers.</summary>
+    private static readonly TimeSpan TotalTimeout = TimeSpan.FromSeconds(3);
+
     private readonly DohProvider[] _providers;
     private readonly HttpClient?[] _clients;
     private readonly object _clientsLock = new();
     private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<WireKey, WireEntry> _wire = new();
+    private readonly ConcurrentDictionary<WireKey, Lazy<Task<byte[]>>> _inflight = new();
+    private readonly CancellationTokenSource _life = new();
+    private int _pruning;
+    /// <summary>Provider asked first: the primary (0), or a fallback while the primary is backed off.</summary>
     private volatile int _preferred;
+    /// <summary>Until this tick count the primary is skipped (it failed, or kept losing hedge races).</summary>
+    private long _primaryRetryAt;
+    /// <summary>Consecutive queries in which the primary was too slow and a fallback answered first.</summary>
+    private int _primaryStrikes;
+    private const int PrimaryMaxStrikes = 3;
+    private static readonly long PrimaryBackoffMs = 30_000;
     private volatile bool _disposed;
 
     private sealed record CacheEntry(IPAddress[] Addresses, long ExpiresAtTicks);
+
+    /// <summary>Cache key: question + the query bits that change the answer's shape (EDNS present, DO, CD).</summary>
+    private readonly record struct WireKey(string Name, ushort Type, ushort Class, byte Flags);
+
+    private sealed class WireEntry(byte[] data, long storedAt, long expiresAt)
+    {
+        public readonly byte[] Data = data;
+        public readonly long StoredAt = storedAt;
+        public readonly long ExpiresAt = expiresAt;
+        public long LastUsed = storedAt;
+    }
 
     /// <param name="provider">Primary provider; the remaining built-in providers are used as fallbacks.</param>
     public DohResolver(DohProvider provider)
@@ -40,11 +74,41 @@ public sealed class DohResolver : IDisposable
         _clients = new HttpClient?[_providers.Length];
     }
 
-    /// <summary>Timeout of one attempt against a single provider.</summary>
-    public TimeSpan AttemptTimeout { get; init; } = TimeSpan.FromSeconds(4);
+    /// <summary>Timeout of one attempt against a single provider (the whole resolution is capped at 3 s).</summary>
+    public TimeSpan AttemptTimeout { get; init; } = TimeSpan.FromMilliseconds(1500);
 
-    /// <summary>Provider that answered last (or the primary one).</summary>
-    public DohProvider CurrentProvider => _providers[_preferred];
+    /// <summary>
+    /// False when this machine has no global IPv6: <see cref="ResolveAsync"/> then returns as soon as the A answer
+    /// is in (AAAA is only asked when there is no A record).
+    /// </summary>
+    public bool Ipv6Available { get; set; } = true;
+
+    /// <summary>Provider asked first right now: the primary one, or a fallback while the primary is backed off.</summary>
+    public DohProvider CurrentProvider => _providers[StartIndex(Environment.TickCount64)];
+
+    private int StartIndex(long now) =>
+        _preferred != 0 && now < Interlocked.Read(ref _primaryRetryAt) ? _preferred : 0;
+
+    /// <summary>
+    /// Records which provider answered. The user's provider stays first unless it failed outright or lost
+    /// <see cref="PrimaryMaxStrikes"/> hedge races in a row; then a fallback leads for 30 s and the primary is retried.
+    /// </summary>
+    private void NoteWinner(int idx, bool primaryFailed)
+    {
+        long now = Environment.TickCount64;
+        if (idx == 0)
+        {
+            Volatile.Write(ref _primaryStrikes, 0);
+            _preferred = 0;
+            return;
+        }
+        if (primaryFailed || Interlocked.Increment(ref _primaryStrikes) >= PrimaryMaxStrikes)
+        {
+            Volatile.Write(ref _primaryStrikes, 0);
+            _preferred = idx;
+            Interlocked.Exchange(ref _primaryRetryAt, now + PrimaryBackoffMs);
+        }
+    }
 
     /// <summary>Raised when a provider fails and the next one is tried (message is Turkish).</summary>
     public event Action<string>? Warning;
@@ -141,32 +205,228 @@ public sealed class DohResolver : IDisposable
         ?? addrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetworkV6 && Socket.OSSupportsIPv6)
         ?? throw new SocketException((int)SocketError.HostNotFound);
 
-    /// <summary>Sends a raw DNS wire query and returns the raw wire response.</summary>
+    /// <summary>
+    /// Sends a raw DNS wire query and returns the raw wire response (a fresh array the caller may modify; its
+    /// transaction ID is the query's). Answers come from the cache when possible: fresh ones with their remaining
+    /// TTL, expired ones (up to a day) at once with TTL 30 s while a background refresh runs. Identical queries in
+    /// flight share one upstream request.
+    /// </summary>
     public async Task<byte[]> QueryRawAsync(byte[] dnsWireQuery, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(dnsWireQuery);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        Exception? last = null;
-        int start = _preferred;
-        for (int i = 0; i < _providers.Length; i++)
+        if (!TryGetWireKey(dnsWireQuery, out var key))
+            return await QueryUpstreamAsync(dnsWireQuery, ct).ConfigureAwait(false);   // not cacheable
+
+        long now = Environment.TickCount64;
+        if (_wire.TryGetValue(key, out var hit))
         {
-            int idx = (start + i) % _providers.Length;
-            ct.ThrowIfCancellationRequested();
-            try
+            if (hit.ExpiresAt > now)
             {
-                var resp = await QueryOneAsync(idx, dnsWireQuery, ct).ConfigureAwait(false);
-                if (_preferred != idx) _preferred = idx;
-                return resp;
+                Volatile.Write(ref hit.LastUsed, now);
+                return Materialize(hit, dnsWireQuery, now, stale: false);
             }
-            catch (Exception ex) when (!ct.IsCancellationRequested && !_disposed)
+            if (now - hit.ExpiresAt < StaleWindowMs)
             {
-                last = ex;
-                if (i + 1 < _providers.Length)
-                    Warning?.Invoke(LiDPI.UI.Strings.LogDohSwitch(_providers[idx].Name, _providers[(idx + 1) % _providers.Length].Name));
+                Volatile.Write(ref hit.LastUsed, now);
+                // off this thread: starting the request (client creation, connect) must not delay the stale answer
+                var refresh = Task.Run(() => Fetch(key, dnsWireQuery));
+                _ = refresh.ContinueWith(static t => _ = t.Exception, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                return Materialize(hit, dnsWireQuery, now, stale: true);
+            }
+            _wire.TryRemove(new KeyValuePair<WireKey, WireEntry>(key, hit));
+        }
+
+        var shared = await Fetch(key, dnsWireQuery).WaitAsync(ct).ConfigureAwait(false);
+        var copy = (byte[])shared.Clone();
+        AdoptQuery(copy, dnsWireQuery);
+        return copy;
+    }
+
+    /// <summary>
+    /// Gives a shared answer the query's transaction ID and the exact spelling of its question name (resolvers
+    /// using DNS 0x20 case randomisation compare it), when both questions have the same wire length.
+    /// </summary>
+    private static void AdoptQuery(byte[] resp, byte[] query)
+    {
+        resp[0] = query[0];
+        resp[1] = query[1];
+        if (DnsWire.TryReadQuestion(query, out _, out _, out _, out int qEnd) &&
+            DnsWire.TryReadQuestion(resp, out _, out _, out _, out int rEnd) && qEnd == rEnd)
+            query.AsSpan(12, qEnd - 16).CopyTo(resp.AsSpan(12));
+    }
+
+    /// <summary>
+    /// Fire-and-forget query (cloudflare.com A) that opens the HTTPS connection to the primary provider, so the
+    /// first real lookup does not pay for the TCP + TLS handshake. Never throws.
+    /// </summary>
+    public void Warmup()
+    {
+        if (_disposed) return;
+        try
+        {
+            _ = QueryRawAsync(DnsWire.BuildQuery("cloudflare.com", DnsWire.TypeA), _life.Token)
+                .ContinueWith(static t => _ = t.Exception, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+        catch
+        {
+            // disposed in between
+        }
+    }
+
+    /// <summary>One upstream request per key at a time; the shared response is cached when it completes.</summary>
+    private Task<byte[]> Fetch(WireKey key, byte[] query)
+    {
+        var mine = new Lazy<Task<byte[]>>(() => FetchCoreAsync(key, query), LazyThreadSafetyMode.ExecutionAndPublication);
+        var actual = _inflight.GetOrAdd(key, mine);
+        var task = actual.Value;
+        if (ReferenceEquals(actual, mine))
+        {
+            _ = task.ContinueWith(_ => _inflight.TryRemove(new KeyValuePair<WireKey, Lazy<Task<byte[]>>>(key, mine)),
+                CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+        return task;
+    }
+
+    private async Task<byte[]> FetchCoreAsync(WireKey key, byte[] query)
+    {
+        // not tied to any single caller: others may be waiting on the same request
+        var resp = await QueryUpstreamAsync(query, _life.Token).ConfigureAwait(false);
+        Store(key, resp);
+        return resp;
+    }
+
+    private void Store(WireKey key, byte[] resp)
+    {
+        if (_disposed) return;
+        uint? ttl = DnsWire.GetCacheTtl(resp, out bool negative);
+        if (ttl is not { } t) return;
+        // the answer must be for the question asked
+        if (!DnsWire.TryReadQuestion(resp, out var name, out var type, out var cls, out _) ||
+            name != key.Name || type != key.Type || cls != key.Class) return;
+        t = negative ? Math.Clamp(t, WireNegMinTtl, WireNegMaxTtl) : Math.Clamp(t, WireMinTtl, WireMaxTtl);
+        long now = Environment.TickCount64;
+        if (_wire.Count >= MaxWireEntries) PruneWire(now);
+        _wire[key] = new WireEntry(resp, now, now + t * 1000L);
+    }
+
+    /// <summary>A copy of a cached answer with the query's ID and TTLs reduced by its age (or 30 s when stale).</summary>
+    private static byte[] Materialize(WireEntry e, byte[] query, long now, bool stale)
+    {
+        var copy = (byte[])e.Data.Clone();
+        AdoptQuery(copy, query);
+        uint elapsed = (uint)Math.Clamp((now - e.StoredAt) / 1000, 0, uint.MaxValue);
+        DnsWire.RewriteTtls(copy, elapsed, stale ? StaleAnswerTtl : null);
+        return copy;
+    }
+
+    /// <summary>Standard query (opcode 0) with one question: key = name, type, class, EDNS present / DO / CD.</summary>
+    private static bool TryGetWireKey(byte[] query, out WireKey key)
+    {
+        key = default;
+        if (query.Length < 12 || (query[2] & 0x80) != 0 || (query[2] & 0x78) != 0) return false;   // response / opcode != 0
+        if (!DnsWire.TryReadQuestion(query, out var name, out var type, out var cls, out _)) return false;
+        if (type is 251 or 252 or 255) return false;   // IXFR / AXFR / ANY
+        if (!DnsWire.TryGetEdns(query, out bool hasOpt, out bool doBit)) return false;
+        byte flags = (byte)((hasOpt ? 1 : 0) | (doBit ? 2 : 0) | ((query[3] & 0x10) != 0 ? 4 : 0));
+        key = new WireKey(name, type, cls, flags);
+        return true;
+    }
+
+    /// <summary>Drops entries past the stale window; if still full, the least recently used eighth (one thread at a time).</summary>
+    private void PruneWire(long now)
+    {
+        if (Interlocked.Exchange(ref _pruning, 1) != 0) return;
+        try
+        {
+            foreach (var kv in _wire)
+                if (now - kv.Value.ExpiresAt >= StaleWindowMs) _wire.TryRemove(kv);
+            int excess = _wire.Count - MaxWireEntries * 7 / 8;
+            if (excess <= 0) return;
+            foreach (var kv in _wire.ToArray().OrderBy(kv => Volatile.Read(ref kv.Value.LastUsed)).Take(excess))
+                _wire.TryRemove(kv);
+        }
+        finally
+        {
+            Volatile.Write(ref _pruning, 0);
+        }
+    }
+
+    /// <summary>
+    /// Asks the preferred provider; if it has not answered after <see cref="HedgeDelay"/> (or failed), the next one
+    /// is started in parallel. The first valid answer wins; the rest are cancelled. Capped at <see cref="TotalTimeout"/>.
+    /// </summary>
+    private async Task<byte[]> QueryUpstreamAsync(byte[] query, CancellationToken ct)
+    {
+        int n = _providers.Length;
+        int start = StartIndex(Environment.TickCount64);
+        int launched = 0;
+        bool primaryFailed = false;
+        Exception? last = null;
+        var running = new List<Task<byte[]>>(n);
+        var indexOf = new Dictionary<Task<byte[]>, int>(n);
+        using var total = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        total.CancelAfter(TotalTimeout);
+
+        void Launch()
+        {
+            int idx = (start + launched++) % n;
+            var t = QueryOneAsync(idx, query, total.Token);
+            running.Add(t);
+            indexOf[t] = idx;
+        }
+
+        try
+        {
+            Launch();
+            while (running.Count > 0)
+            {
+                var waitSet = new List<Task>(running.Count + 1);
+                waitSet.AddRange(running);
+                Task? hedge = launched < n ? Task.Delay(HedgeDelay, total.Token) : null;
+                if (hedge is not null) waitSet.Add(hedge);
+                var done = await Task.WhenAny(waitSet).ConfigureAwait(false);
+
+                if (ReferenceEquals(done, hedge))
+                {
+                    if (total.IsCancellationRequested) break;
+                    Launch();   // slow provider: race the next one
+                    continue;
+                }
+
+                var attempt = (Task<byte[]>)done;
+                running.Remove(attempt);
+                int idx = indexOf[attempt];
+                if (attempt.IsCompletedSuccessfully)
+                {
+                    // a fallback that won while it led (primary backed off) keeps leading; otherwise judge the primary
+                    if (start == 0 || idx == 0) NoteWinner(idx, primaryFailed);
+                    return attempt.Result;
+                }
+                if (idx == 0 && !total.IsCancellationRequested) primaryFailed = true;
+                last = attempt.Exception?.GetBaseException() ?? last;
+                if (ct.IsCancellationRequested || _disposed) break;
+                if (total.IsCancellationRequested) continue;   // budget spent: let the others finish cancelling
+                if (launched < n)
+                {
+                    Warning?.Invoke(LiDPI.UI.Strings.LogDohSwitch(_providers[idx].Name, _providers[(start + launched) % n].Name));
+                    Launch();   // failed outright: next provider at once
+                }
             }
         }
-        throw new HttpRequestException(LiDPI.UI.Strings.ErrDohAllFailed, last);
+        finally
+        {
+            try { total.Cancel(); } catch (ObjectDisposedException) { }
+            foreach (var t in running)
+                _ = t.ContinueWith(static r => _ = r.Exception, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+        ct.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        throw new HttpRequestException(LiDPI.UI.Strings.ErrDohAllFailed, last ?? new TimeoutException());
     }
 
     /// <summary>Resolves A and AAAA records (cached, TTL-respecting). Returns an empty array for NXDOMAIN.</summary>
@@ -178,13 +438,11 @@ public sealed class DohResolver : IDisposable
         long now = Environment.TickCount64;
         if (_cache.TryGetValue(host, out var hit) && hit.ExpiresAtTicks > now) return hit.Addresses;
 
-        var qa = QueryRawAsync(DnsWire.BuildQuery(host, DnsWire.TypeA), ct);
-        var q6 = QueryRawAsync(DnsWire.BuildQuery(host, DnsWire.TypeAaaa), ct);
-
         var list = new List<IPAddress>(4);
         uint minTtl = uint.MaxValue;
         Exception? error = null;
-        foreach (var t in new[] { qa, q6 })
+
+        async Task CollectAsync(Task<byte[]> t)
         {
             try
             {
@@ -196,6 +454,22 @@ public sealed class DohResolver : IDisposable
                 error ??= ex;
             }
         }
+
+        if (Ipv6Available)
+        {
+            var qa = QueryRawAsync(DnsWire.BuildQuery(host, DnsWire.TypeA), ct);
+            var q6 = QueryRawAsync(DnsWire.BuildQuery(host, DnsWire.TypeAaaa), ct);
+            await CollectAsync(qa).ConfigureAwait(false);
+            await CollectAsync(q6).ConfigureAwait(false);
+        }
+        else
+        {
+            // no global IPv6 here: AAAA records could not be used anyway, so do not wait for them
+            await CollectAsync(QueryRawAsync(DnsWire.BuildQuery(host, DnsWire.TypeA), ct)).ConfigureAwait(false);
+            if (list.Count == 0 && !ct.IsCancellationRequested)
+                await CollectAsync(QueryRawAsync(DnsWire.BuildQuery(host, DnsWire.TypeAaaa), ct)).ConfigureAwait(false);
+        }
+        ct.ThrowIfCancellationRequested();
         if (list.Count == 0 && error is not null) throw error;
 
         var ttl = minTtl == uint.MaxValue ? MinTtl : TimeSpan.FromSeconds(minTtl);
@@ -212,6 +486,7 @@ public sealed class DohResolver : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        try { _life.Cancel(); } catch (ObjectDisposedException) { }
         lock (_clientsLock)
         {
             for (int i = 0; i < _clients.Length; i++)
@@ -221,6 +496,8 @@ public sealed class DohResolver : IDisposable
             }
         }
         _cache.Clear();
+        _wire.Clear();
+        _inflight.Clear();
     }
 
     private async Task<byte[]> QueryOneAsync(int idx, byte[] query, CancellationToken ct)
@@ -267,12 +544,13 @@ public sealed class DohResolver : IDisposable
             AllowAutoRedirect = false,
             AutomaticDecompression = DecompressionMethods.None,
             EnableMultipleHttp2Connections = true,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
-            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+            // keep the (expensive) HTTPS connection open across quiet periods; pings detect a dead one early
+            PooledConnectionLifetime = TimeSpan.FromMinutes(30),
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(15),
             ConnectTimeout = TimeSpan.FromSeconds(5),
             KeepAlivePingDelay = TimeSpan.FromSeconds(30),
             KeepAlivePingTimeout = TimeSpan.FromSeconds(10),
-            KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests,
+            KeepAlivePingPolicy = HttpKeepAlivePingPolicy.Always,
             ConnectCallback = async (ctx, token) =>
             {
                 var s = new Socket(bootstrap.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };

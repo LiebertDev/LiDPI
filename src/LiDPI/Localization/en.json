@@ -25,7 +25,7 @@
   "ProfilesCaption": "PRESET PROFILES",
 
   "Profile.standard.Name": "Türkiye Standard",
-  "Profile.standard.Desc": "Fake packet (auto TTL, x2) + split at byte 2 + reverse order + DoH + QUIC blocked",
+  "Profile.standard.Desc": "Fake packet (auto TTL, x2) + split at byte 2 + reverse order + DoH",
   "Profile.light.Name": "Light",
   "Profile.light.Desc": "Split at SNI + DoH only (no fake packet, not enough on many lines)",
   "Profile.aggressive.Name": "Aggressive",
@@ -33,7 +33,7 @@
   "Profile.superonline.Name": "Superonline",
   "Profile.superonline.Desc": "Fake packet (TTL 3) + split + DoH",
   "Profile.ttnet.Name": "Türk Telekom",
-  "Profile.ttnet.Desc": "Fake packet (TTL 5) + split at byte 2 + reverse order + DoH + QUIC blocked",
+  "Profile.ttnet.Desc": "Fake packet (TTL 5) + split at byte 2 + reverse order + DoH",
   "Profile.auto.Name": "Auto (tuned for my line)",
 
   "DescFakePacket": "Fake packet ({0})",
@@ -47,6 +47,7 @@
   "DescFakeRepeat": "fake x{0}",
   "DescHostTrick": "HTTP Host trick",
   "DescSystemDns": "system DNS",
+  "DescFastDns": "Fast DNS",
   "DescNoTechnique": "no techniques",
   "DescPickedByTest": "Picked by a test on your line",
 
@@ -233,6 +234,8 @@
   "SettingsDns": "DNS PROVIDER (DoH)",
   "SettingDnsHint": "DNS lookups go to this provider, encrypted. Changes apply right away, even while connected.",
   "DohCustomChip": "Custom…",
+  "DnsFastChip": "Fast DNS (UDP, Yandex 1253)",
+  "DnsFastNote": "Faster, but unencrypted: DNS lookups go to Yandex DNS as plain UDP on port 1253. Only applies in \"All apps\" mode; \"Browser only\" mode uses DoH (Cloudflare).",
   "DohCustomName": "Custom ({0})",
   "DohCustomUrlLabel": "DoH address",
   "DohCustomUrlPlaceholder": "https://dns.example.com/dns-query",

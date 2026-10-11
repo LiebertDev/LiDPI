@@ -379,7 +379,10 @@ public sealed partial class MainViewModel
         };
         var dohText = _selectedDoh.IsCustom
             ? DohProviders.Custom is { } c ? $"custom ({new Uri(c.Url).Host}, bootstrap {(string.IsNullOrEmpty(c.BootstrapIp) ? "system DNS" : "set")})" : "custom (not saved → Cloudflare)"
-            : _selectedDoh.Key;
+            : _selectedDoh.IsFast
+                ? $"fast DNS, UDP redirect to {FastDns.Resolve(_settings.FastDnsServer, System.Net.Sockets.AddressFamily.InterNetwork)} / " +
+                  $"{FastDns.Resolve(_settings.FastDnsServerV6, System.Net.Sockets.AddressFamily.InterNetworkV6)} (proxy mode: DoH Cloudflare)"
+                : _selectedDoh.Key;
         var snap = new DiagnosticSnapshot(
             AppVersion, $"{Mode} ({ModeName(Mode)})", _state.ToString(), EffectiveProfile, dohText, settings,
             _lastHealthSummary, _lastAutoFindSummary, [.. _diagLog]);

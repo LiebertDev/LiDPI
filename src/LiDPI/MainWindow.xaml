@@ -736,6 +736,11 @@
                                     </ListBox.ItemsPanel>
                                 </ListBox>
 
+                                <!-- "Hızlı DNS" (UDP redirect): faster, but unencrypted -->
+                                <TextBlock Style="{StaticResource SettingHint}" Margin="2,4,8,8" TextWrapping="Wrap"
+                                           Text="{l:T DnsFastNote}"
+                                           Visibility="{Binding IsFastDnsSelected, Converter={StaticResource BoolVis}}" />
+
                                 <!-- custom provider editor ("Özel…") -->
                                 <StackPanel x:Name="CustomDohPanel" Margin="0,4,8,8"
                                             Visibility="{Binding IsCustomDohSelected, Converter={StaticResource BoolVis}}">

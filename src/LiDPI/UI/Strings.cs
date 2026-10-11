@@ -66,6 +66,7 @@ public static class Strings
     public static string DescFakeRepeat(int count) => F([count]);
     public static string DescHostTrick => L();
     public static string DescSystemDns => L();
+    public static string DescFastDns => L();
     public static string DescNoTechnique => L();
     public static string DescPickedByTest => L();
     public static string VariantTtlByte(int ttl, int position) => F([ttl, position]);
@@ -165,6 +166,8 @@ public static class Strings
 
     // ===== custom DoH provider =====
     public static string DohCustomChip => L();
+    /// <summary>Chip of the "Hızlı DNS" (UDP redirect) option.</summary>
+    public static string DnsFastChip => L();
     /// <summary>{0}: host of the custom DoH URL.</summary>
     public static string DohCustomName(string host) => F([host]);
     public static string DohCustomTestTimeout => L();

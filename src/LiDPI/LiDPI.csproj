@@ -17,7 +17,7 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <AssemblyName>LiDPI</AssemblyName>
     <RootNamespace>LiDPI</RootNamespace>
-    <Version>1.1.1</Version>
+    <Version>1.1.2</Version>
     <!-- WPF app: DPI awareness comes from app.manifest, not the WinForms API. -->
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
   </PropertyGroup>

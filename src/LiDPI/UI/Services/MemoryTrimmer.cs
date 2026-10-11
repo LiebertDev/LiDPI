@@ -4,11 +4,16 @@ using System.Runtime.InteropServices;
 namespace LiDPI.UI.Services;
 
 /// <summary>
-/// Gives memory back to the OS once the app goes to the tray: full blocking GC with LOH compaction,
-/// then trims the process working set (pages are faulted back in lazily if they are touched again).
+/// Gives memory back to the OS once the app goes to the tray: an optimized (GC-decides) collection, with a full
+/// compacting one including the large object heap at most every 10 minutes, then trims the process working set
+/// (pages are faulted back in lazily if they are touched again). Runs on a background thread after a delay, so
+/// hiding the window never waits for it.
 /// </summary>
 public static class MemoryTrimmer
 {
+    private static readonly long FullCompactionIntervalMs = (long)TimeSpan.FromMinutes(10).TotalMilliseconds;
+    private static long _lastFullCompaction = long.MinValue / 2;
+
     [DllImport("kernel32.dll", SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static extern bool SetProcessWorkingSetSize(IntPtr process, nint minimumWorkingSetSize, nint maximumWorkingSetSize);
@@ -34,15 +39,23 @@ public static class MemoryTrimmer
         });
     }
 
-    /// <summary>Full compacting GC + working-set trim, synchronously. Never throws.</summary>
+    /// <summary>GC + working-set trim, synchronously (call from a background thread). Never throws.</summary>
     public static void Trim()
     {
         try
         {
-            GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-            GC.WaitForPendingFinalizers();
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+            long now = Environment.TickCount64;
+            if (now - Interlocked.Read(ref _lastFullCompaction) >= FullCompactionIntervalMs)
+            {
+                Interlocked.Exchange(ref _lastFullCompaction, now);
+                GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+            }
+            else
+            {
+                // let the GC decide whether a collection is worth it now; no LOH compaction
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false);
+            }
         }
         catch { /* best effort */ }
 

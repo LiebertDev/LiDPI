@@ -50,8 +50,9 @@ public static partial class DiagnosticReport
         Section(sb, "Engine");
         Line(sb, "Mode", s.Mode);
         Line(sb, "State", s.EngineState);
-        Line(sb, "DoH provider", s.DohProvider);
         var p = s.Profile;
+        Line(sb, "DNS mode", p.Dns.ToString());
+        Line(sb, "DoH provider", s.DohProvider);
         Line(sb, "Profile", $"{p.DisplayName} (id: {p.Id})");
         Line(sb, "  SplitTlsHello", p.SplitTlsHello.ToString());
         Line(sb, "  SplitPosition", p.SplitPosition.ToString());

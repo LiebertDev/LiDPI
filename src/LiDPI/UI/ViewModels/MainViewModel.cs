@@ -52,7 +52,7 @@ public sealed partial class MainViewModel : ObservableObject
             Profiles.Add(custom);
         }
         _selectedProfile = Profiles.FirstOrDefault(p => p.Id == settings.ProfileId) ?? BuiltInProfiles.Standard;
-        DohProviderList = [.. DohProviders.All.Select(p => new DohOption(p.Name)), new DohOption(DohProviders.CustomKey)];
+        DohProviderList = [.. DohProviders.All.Select(p => new DohOption(p.Name)), new DohOption(FastDns.ChipKey), new DohOption(DohProviders.CustomKey)];
         _selectedDoh = DohProviderList.FirstOrDefault(o => string.Equals(o.Key, settings.DohProviderName, StringComparison.OrdinalIgnoreCase))
                        ?? DohProviderList[0];
         InitFeatures();
@@ -181,6 +181,7 @@ public sealed partial class MainViewModel : ObservableObject
             _settings.DohProviderName = value.Key;
             _settings.Save();
             OnPropertyChanged(nameof(IsCustomDohSelected));
+            OnPropertyChanged(nameof(IsFastDnsSelected));
             OnCustomDohSelectionChanged();
             RestartIfRunning();
         }
@@ -232,7 +233,32 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     // ===== Actions =====
-    private BypassProfile EffectiveProfile => _selectedProfile with { DohProviderName = _selectedDoh.Key };
+    private BypassProfile EffectiveProfile => WithDnsChoice(_selectedProfile);
+
+    /// <summary>True while the "Hızlı DNS" (UDP redirect) chip is selected.</summary>
+    public bool IsFastDnsSelected => _selectedDoh.IsFast;
+
+    /// <summary>
+    /// Applies the DNS chip to a profile: a DoH provider, or "Hızlı DNS" (UDP redirect; DoH via Cloudflare where the
+    /// engine cannot redirect, i.e. the proxy).
+    /// </summary>
+    private BypassProfile WithDnsChoice(BypassProfile p)
+    {
+        // a profile that keeps the system resolver stays so (like it ignores the DoH provider chip)
+        if (_selectedDoh.IsFast && p.Dns != DnsMode.System)
+            return p with
+            {
+                Dns = DnsMode.UdpRedirect,
+                DohProviderName = DohProviders.Cloudflare.Name,
+                FastDnsServer = _settings.FastDnsServer,
+                FastDnsServerV6 = _settings.FastDnsServerV6,
+            };
+        return p with
+        {
+            Dns = p.Dns == DnsMode.UdpRedirect ? DnsMode.DoH : p.Dns,
+            DohProviderName = _selectedDoh.Key,
+        };
+    }
 
     // Engine start/stop can do synchronous work (driver load, proxy setup) before its first await:
     // run it on the thread pool, serialised in call order, so the UI thread never stalls mid-animation.
@@ -533,9 +559,8 @@ public sealed partial class MainViewModel : ObservableObject
         var serial = ++_intentSerial;
         if (!await GuardGateAsync(StartOrigin.User, autoFind: true, serial) || serial != _intentSerial || !CanAutoFind) return;
 
-        var doh = _selectedDoh.Key;
         var variants = AutoFind.QuickCandidates()
-            .Select(v => v with { Profile = v.Profile! with { DohProviderName = doh } })
+            .Select(v => v with { Profile = WithDnsChoice(v.Profile!) })
             .ToList();
 
         _autoFindWasActive = IsActive;
@@ -734,7 +759,9 @@ public enum AutoFindStage { Idle, Running, Found, Failed }
 public sealed record DohOption(string Key)
 {
     public bool IsCustom => Key == DohProviders.CustomKey;
-    public string Name => IsCustom ? Strings.DohCustomChip : Key;
+    /// <summary>The "Hızlı DNS" (UDP redirect) chip rather than a DoH provider.</summary>
+    public bool IsFast => Key == FastDns.ChipKey;
+    public string Name => IsCustom ? Strings.DohCustomChip : IsFast ? Strings.DnsFastChip : Key;
     public override string ToString() => Name;
 }
 

@@ -25,7 +25,7 @@
   "ProfilesCaption": "HAZIR PROFİLLER",
 
   "Profile.standard.Name": "Türkiye Standart",
-  "Profile.standard.Desc": "Sahte paket (otomatik TTL, x2) + 2. baytta bölme + ters sıra + DoH + QUIC engelleme",
+  "Profile.standard.Desc": "Sahte paket (otomatik TTL, x2) + 2. baytta bölme + ters sıra + DoH",
   "Profile.light.Name": "Hafif",
   "Profile.light.Desc": "Yalnızca SNI'de bölme + DoH (sahte paket yok; birçok hatta yetersiz)",
   "Profile.aggressive.Name": "Agresif",
@@ -33,7 +33,7 @@
   "Profile.superonline.Name": "Superonline",
   "Profile.superonline.Desc": "Sahte paket (TTL 3) + bölme + DoH",
   "Profile.ttnet.Name": "Türk Telekom",
-  "Profile.ttnet.Desc": "Sahte paket (TTL 5) + 2. baytta bölme + ters sıra + DoH + QUIC engelleme",
+  "Profile.ttnet.Desc": "Sahte paket (TTL 5) + 2. baytta bölme + ters sıra + DoH",
   "Profile.auto.Name": "Otomatik (hattıma özel)",
 
   "DescFakePacket": "Sahte paket ({0})",
@@ -47,6 +47,7 @@
   "DescFakeRepeat": "sahte x{0}",
   "DescHostTrick": "HTTP Host hilesi",
   "DescSystemDns": "sistem DNS",
+  "DescFastDns": "Hızlı DNS",
   "DescNoTechnique": "teknik yok",
   "DescPickedByTest": "Hattınızda yapılan testle seçildi",
 
@@ -233,6 +234,8 @@
   "SettingsDns": "DNS SAĞLAYICISI (DoH)",
   "SettingDnsHint": "DNS sorguları şifreli olarak bu sağlayıcı üzerinden çözülür. Değişiklik bağlıyken hemen uygulanır.",
   "DohCustomChip": "Özel…",
+  "DnsFastChip": "Hızlı DNS (UDP, Yandex 1253)",
+  "DnsFastNote": "Daha hızlı, ama şifresiz: DNS sorguları Yandex DNS'e 1253 numaralı porttan düz UDP ile gider. Yalnızca \"Tüm Uygulamalar\" modunda geçerlidir; \"Sadece Tarayıcı\" modunda DoH (Cloudflare) kullanılır.",
   "DohCustomName": "Özel ({0})",
   "DohCustomUrlLabel": "DoH adresi",
   "DohCustomUrlPlaceholder": "https://dns.ornek.com/dns-query",

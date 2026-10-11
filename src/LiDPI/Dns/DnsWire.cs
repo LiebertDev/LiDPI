@@ -189,6 +189,142 @@ internal static class DnsWire
         return r;
     }
 
+    public const ushort TypeSoa = 6;
+
+    /// <summary>
+    /// Reads the single question of a message: the name as lowercase dotted ASCII (uncompressed labels only),
+    /// QTYPE and QCLASS. False for QDCOUNT != 1, compression in the question or malformed input.
+    /// </summary>
+    public static bool TryReadQuestion(ReadOnlySpan<byte> m, out string name, out ushort qtype, out ushort qclass, out int end)
+    {
+        name = "";
+        qtype = qclass = 0;
+        end = 0;
+        if (m.Length < 12 || BinaryPrimitives.ReadUInt16BigEndian(m[4..]) != 1) return false;
+        int pos = 12;
+        Span<char> buf = stackalloc char[256];
+        int w = 0;
+        while (true)
+        {
+            if (pos >= m.Length) return false;
+            int len = m[pos];
+            if (len == 0) { pos++; break; }
+            if ((len & 0xC0) != 0 || pos + 1 + len > m.Length || w + len + 1 > buf.Length) return false;
+            if (w > 0) buf[w++] = '.';
+            for (int i = 0; i < len; i++)
+            {
+                byte b = m[pos + 1 + i];
+                if (b >= 'A' && b <= 'Z') b = (byte)(b + 32);
+                buf[w++] = (char)b;
+            }
+            pos += 1 + len;
+        }
+        if (pos + 4 > m.Length) return false;
+        qtype = BinaryPrimitives.ReadUInt16BigEndian(m[pos..]);
+        qclass = BinaryPrimitives.ReadUInt16BigEndian(m[(pos + 2)..]);
+        name = w == 0 ? "." : new string(buf[..w]);
+        end = pos + 4;
+        return true;
+    }
+
+    /// <summary>
+    /// EDNS(0) state of a message: whether its additional section has an OPT record, and the DO bit of that record.
+    /// False if the record sections are malformed.
+    /// </summary>
+    public static bool TryGetEdns(ReadOnlySpan<byte> m, out bool hasOpt, out bool doBit)
+    {
+        hasOpt = doBit = false;
+        if (!TryGetQuestionEnd(m, out int pos)) return false;
+        int skip = BinaryPrimitives.ReadUInt16BigEndian(m[6..]) + BinaryPrimitives.ReadUInt16BigEndian(m[8..]);
+        int ar = BinaryPrimitives.ReadUInt16BigEndian(m[10..]);
+        for (int i = 0; i < skip + ar; i++)
+        {
+            if (!TrySkipName(m, ref pos) || pos + 10 > m.Length) return false;
+            ushort type = BinaryPrimitives.ReadUInt16BigEndian(m[pos..]);
+            int rdLen = BinaryPrimitives.ReadUInt16BigEndian(m[(pos + 8)..]);
+            if (i >= skip && type == TypeOpt)
+            {
+                hasOpt = true;
+                doBit = (m[pos + 6] & 0x80) != 0;   // TTL field = ext-RCODE, version, flags (DO = top bit)
+                return true;
+            }
+            pos += 10 + rdLen;
+            if (pos > m.Length) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// How long a response may be cached, in seconds: the smallest answer TTL for an answer (NOERROR with records),
+    /// or for NXDOMAIN / NODATA the SOA negative TTL (min of the SOA record TTL and its MINIMUM field, RFC 2308).
+    /// Returns null when the response must not be cached (other RCODEs, TC set, malformed). <paramref name="negative"/>
+    /// tells which rule was used; when no TTL is present the result is 0 (the caller clamps).
+    /// </summary>
+    public static uint? GetCacheTtl(ReadOnlySpan<byte> m, out bool negative)
+    {
+        negative = false;
+        if (m.Length < 12 || (m[2] & 0x80) == 0 || (m[2] & 0x02) != 0) return null;   // not a response / truncated
+        int rcode = m[3] & 0x0F;
+        if (rcode is not (0 or 3)) return null;
+        if (!TryGetQuestionEnd(m, out int pos)) return null;
+        int an = BinaryPrimitives.ReadUInt16BigEndian(m[6..]);
+        int ns = BinaryPrimitives.ReadUInt16BigEndian(m[8..]);
+        negative = rcode == 3 || an == 0;
+        uint min = uint.MaxValue;
+        for (int i = 0; i < an + ns; i++)
+        {
+            if (!TrySkipName(m, ref pos) || pos + 10 > m.Length) return null;
+            ushort type = BinaryPrimitives.ReadUInt16BigEndian(m[pos..]);
+            uint ttl = BinaryPrimitives.ReadUInt32BigEndian(m[(pos + 4)..]);
+            int rdLen = BinaryPrimitives.ReadUInt16BigEndian(m[(pos + 8)..]);
+            int rd = pos + 10;
+            if (rd + rdLen > m.Length) return null;
+            if (!negative && i < an)
+            {
+                if (ttl < min) min = ttl;
+            }
+            else if (negative && i >= an && type == TypeSoa)
+            {
+                // RDATA: MNAME, RNAME, SERIAL, REFRESH, RETRY, EXPIRE, MINIMUM
+                int p = rd;
+                if (TrySkipName(m, ref p) && TrySkipName(m, ref p) && p + 20 <= rd + rdLen)
+                {
+                    uint minimum = BinaryPrimitives.ReadUInt32BigEndian(m[(p + 16)..]);
+                    uint neg = Math.Min(ttl, minimum);
+                    if (neg < min) min = neg;
+                }
+            }
+            pos = rd + rdLen;
+        }
+        return min == uint.MaxValue ? 0 : min;
+    }
+
+    /// <summary>
+    /// Rewrites the TTL of every record except OPT: to <paramref name="fixedTtl"/> when given, else to
+    /// (TTL - <paramref name="elapsed"/>), at least 1. Leaves the message unchanged where it is malformed.
+    /// </summary>
+    public static void RewriteTtls(Span<byte> m, uint elapsed, uint? fixedTtl)
+    {
+        if (!TryGetQuestionEnd(m, out int pos)) return;
+        int count = BinaryPrimitives.ReadUInt16BigEndian(m[6..]) + BinaryPrimitives.ReadUInt16BigEndian(m[8..])
+                    + BinaryPrimitives.ReadUInt16BigEndian(m[10..]);
+        for (int i = 0; i < count; i++)
+        {
+            if (!TrySkipName(m, ref pos) || pos + 10 > m.Length) return;
+            ushort type = BinaryPrimitives.ReadUInt16BigEndian(m[pos..]);
+            if (type != TypeOpt)
+            {
+                var t = m[(pos + 4)..];
+                uint ttl = BinaryPrimitives.ReadUInt32BigEndian(t);
+                uint v = fixedTtl ?? (ttl > elapsed ? ttl - elapsed : 1u);
+                if (v == 0) v = 1;
+                BinaryPrimitives.WriteUInt32BigEndian(t, v);
+            }
+            pos += 10 + BinaryPrimitives.ReadUInt16BigEndian(m[(pos + 8)..]);
+            if (pos > m.Length) return;
+        }
+    }
+
     /// <summary>Builds a SERVFAIL reply (question echoed, no records). Returns null if the query is malformed.</summary>
     public static byte[]? BuildServFail(ReadOnlySpan<byte> query)
     {

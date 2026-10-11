@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -11,7 +12,7 @@ namespace LiDPI.Engines.Divert;
 
 /// <summary>
 /// System-wide packet engine built on WinDivert 2.2: TLS ClientHello splitting / disorder / fake
-/// injection, HTTP Host obfuscation, QUIC blocking and transparent DNS-over-HTTPS.
+/// injection, HTTP Host obfuscation, QUIC blocking, transparent DNS-over-HTTPS and the "Hızlı DNS" UDP redirect.
 /// </summary>
 public sealed class DivertEngine : IBypassEngine
 {
@@ -24,10 +25,28 @@ public sealed class DivertEngine : IBypassEngine
     private const int MaxDnsUdpResponse = 4096;
     private const byte FallbackFakeTtl = 4;
     private const int MinAutoFakeTtl = 3;
+    /// <summary>
+    /// Upper bound of the auto TTL. The hop count read from a SYN-ACK is only an estimate: CDN edges (Akamai,
+    /// Cloudflare, Fastly, Meta measured on Türk Telekom 2026-10) answer with non-standard initial TTLs or over
+    /// longer return paths, so "hops - 2" often let the decoy reach the server, which then aborted the handshake
+    /// with a TLS alert (57 failed connections in one browsing session; Instagram never loaded). The DPI box is
+    /// 2 hops away and no server was seen closer than 5 hops, so 5 (a common Türkiye setting) is safe.
+    /// </summary>
+    private const int MaxAutoFakeTtl = 5;
+    /// <summary>"Hızlı DNS": how long an IPv6 query forwarded over IPv4 waits for the resolver.</summary>
+    private const int FastDnsForwardTimeoutMs = 3000;
     private const int MaxHopCacheEntries = 16384;
     /// <summary>Learned hop counts go stale (route / network changes): the whole cache is dropped this often.</summary>
     private const long HopCacheLifetimeMs = 30 * 60 * 1000;
     private const string DriverServiceName = "WinDivert";
+    /// <summary>Blocked QUIC: ICMP "port unreachable" answers per second at most (the rest is only dropped).</summary>
+    private const int MaxQuicRejectsPerSecond = 50;
+    /// <summary>A QUIC flow (destination + client port) gets one ICMP answer per this period; its other packets are dropped.</summary>
+    private const long QuicFlowMemoryMs = 10_000;
+    private const int MaxQuicFlows = 4096;
+    /// <summary>"Hızlı DNS": how long a redirected query's original destination is remembered for its replies.</summary>
+    private const long FastDnsFlowMs = 10_000;
+    private const int MaxFastDnsFlows = 8192;
 
     /// <summary>Process names (lowercase, no .exe) of other DPI tools that conflict with this engine.</summary>
     internal static readonly string[] ConflictingTools = ["goodbyedpi", "winws", "zapret", "splitwire"];
@@ -61,6 +80,23 @@ public sealed class DivertEngine : IBypassEngine
 
     private long _warnWindow, _debugWindow;
     private int _warnCount, _debugCount;
+
+    // blocked QUIC (main thread only)
+    private readonly Dictionary<(UInt128 Dst, ushort SrcPort), long> _quicFlows = new();
+    private readonly byte[] _icmpBuf = new byte[1280];
+    private long _quicWindow;
+    private int _quicCount;
+
+    // "Hızlı DNS" UDP redirect (set in StartCore; the flow table is used by the main thread only)
+    private byte[]? _fastAddr4, _fastAddr6;
+    private ushort _fastPort4, _fastPort6;
+    /// <summary>IPv4 resolver; IPv6-transport queries are forwarded to it when there is no global IPv6.</summary>
+    private System.Net.IPEndPoint? _fastEp4;
+    private readonly Dictionary<(bool V6, ushort ClientPort, ushort Id), FastDnsFlow> _fastFlows = new();
+    private long _fastPruneAt;
+
+    /// <summary>Where a redirected query was originally sent (restored as the source of its replies).</summary>
+    private readonly record struct FastDnsFlow(byte[] Server, ushort ServerPort, long ExpiresAt);
 
     public EngineMode Mode => EngineMode.Divert;
     public string DisplayName => Strings.ModeAll;
@@ -160,12 +196,40 @@ public sealed class DivertEngine : IBypassEngine
 
         var p = _profile;
         bool doh = p.Dns == DnsMode.DoH;
-        string? filter = BuildMainFilter(p, doh);
+        bool fast = p.Dns == DnsMode.UdpRedirect;
+        _fastAddr4 = _fastAddr6 = null;
+        _fastPort4 = _fastPort6 = 0;
+        _fastEp4 = null;
+        string? inbound = null;
+        if (fast)
+        {
+            var ep4 = FastDns.Resolve(p.FastDnsServer, System.Net.Sockets.AddressFamily.InterNetwork);
+            var ep6 = FastDns.Resolve(p.FastDnsServerV6, System.Net.Sockets.AddressFamily.InterNetworkV6);
+            _fastEp4 = ep4;
+            _fastAddr4 = ep4.Address.GetAddressBytes();
+            _fastPort4 = (ushort)ep4.Port;
+            var from = new List<string>(2) { $"(ip.SrcAddr == {ep4.Address} and udp.SrcPort == {ep4.Port})" };
+            // without global IPv6 the IPv6 resolver is unreachable: IPv6-transport queries (e.g. to the router's
+            // fe80:: address, which answers from the ISP's poisoned resolver) are then forwarded over IPv4
+            if (FastDns.HasGlobalIpv6())
+            {
+                _fastAddr6 = ep6.Address.GetAddressBytes();
+                _fastPort6 = (ushort)ep6.Port;
+                from.Add($"(ipv6.SrcAddr == {ep6.Address} and udp.SrcPort == {ep6.Port})");
+            }
+            inbound = "inbound and !loopback and !impostor and udp and (" + string.Join(" or ", from) + ")";
+        }
+        string? filter = BuildMainFilter(p, doh || fast, inbound);
 
         _stopping = false;
         _closing = false;
         _loopFailed = false;
         _hopTtl.Clear();
+        _quicFlows.Clear();
+        _fastFlows.Clear();
+        _quicWindow = 0;
+        _quicCount = 0;
+        _fastPruneAt = 0;
         _cts = new CancellationTokenSource();
         _segBuf = GC.AllocateArray<byte>(WinDivertNative.MtuMax, pinned: true);
         _fakeBuf = GC.AllocateArray<byte>(WinDivertNative.MtuMax, pinned: true);
@@ -225,6 +289,8 @@ public sealed class DivertEngine : IBypassEngine
         }
 
         Write("Info", Strings.LogDivertRunning(Describe(p)));
+        // open the DoH connection now, before the DNS cache flush makes every app resolve again
+        _resolver?.Warmup();
     }
 
     private static IntPtr Open(string filter, short priority, ulong flags)
@@ -282,6 +348,8 @@ public sealed class DivertEngine : IBypassEngine
         _cts?.Dispose();
         _cts = null;
         _hopTtl.Clear();
+        _quicFlows.Clear();
+        _fastFlows.Clear();
 
         // Only stop the driver if we started it (other tools may share it); our handles are closed by now.
         if (_ownsDriver)
@@ -425,8 +493,8 @@ public sealed class DivertEngine : IBypassEngine
         int initial = ttl <= 64 ? 64 : ttl <= 128 ? 128 : 255;
         int hops = initial - ttl;
         // The decoy must pass the DPI box (measured on Türk Telekom: 2 hops away, so TTL >= 3) but die
-        // before the server: hops-2, at least MinAutoFakeTtl, never more than hops-1.
-        int fakeTtl = hops - 1 >= MinAutoFakeTtl ? Math.Max(hops - 2, MinAutoFakeTtl) : hops - 1;
+        // before the server: hops-2 within [MinAutoFakeTtl, MaxAutoFakeTtl], never more than hops-1.
+        int fakeTtl = hops - 1 >= MinAutoFakeTtl ? Math.Clamp(hops - 2, MinAutoFakeTtl, MaxAutoFakeTtl) : hops - 1;
         byte fake = (byte)Math.Clamp(fakeTtl, 1, 255);
         long now = Environment.TickCount64;
         if (_hopTtl.Count >= MaxHopCacheEntries || now - _hopCacheSince > HopCacheLifetimeMs)
@@ -450,10 +518,31 @@ public sealed class DivertEngine : IBypassEngine
         pkt = pkt[..pi.TotalLength];
         var payload = pkt.Slice(pi.PayloadOffset, pi.PayloadLength);
 
+        if (!addr.Outbound)
+        {
+            // only replies of the "Hızlı DNS" resolver are captured inbound
+            if (pi.Protocol == PacketInfo.ProtoUdp && TryRestoreFastDnsReply(pkt, pi, ref addr)) return;
+            Reinject(pkt, ref addr);
+            return;
+        }
+
         if (pi.Protocol == PacketInfo.ProtoUdp)
         {
-            if (pi.DstPort == 443 && _profile.BlockQuic) return;   // drop QUIC -> browsers fall back to TCP
-            if (pi.DstPort == 53 && _resolver is not null && TryQueueDns(pkt, pi, addr)) return;
+            if (pi.DstPort == 443 && _profile.BlockQuic)
+            {
+                // QUIC is dropped; the first packet of a flow gets a "port unreachable" so browsers switch to TCP
+                // at once instead of waiting for the QUIC handshake to time out
+                _handled = true;
+                try { RejectQuic(pkt, pi, addr); }
+                catch { /* the drop is what matters */ }
+                return;
+            }
+            if (pi.DstPort == 53)
+            {
+                if (_resolver is not null && TryQueueDns(pkt, pi, addr)) return;
+                if (_fastAddr4 is not null && TryRedirectFastDns(pkt, pi, ref addr)) return;
+                if (pi.IsV6 && _fastAddr6 is null && _fastEp4 is not null && TryForwardFastDns(pkt, pi, addr)) return;
+            }
         }
         else if (pi.Protocol == PacketInfo.ProtoTcp && pi.DstPort == 53)
         {
@@ -559,6 +648,149 @@ public sealed class DivertEngine : IBypassEngine
         return _hopTtl.TryGetValue(PacketInfo.DstKey(pkt), out byte t) ? t : FallbackFakeTtl;
     }
 
+    // ------------------------------------------------------------------ blocked QUIC
+
+    private void RejectQuic(ReadOnlySpan<byte> pkt, in PacketInfo pi, in WinDivertAddress addr)
+    {
+        long now = Environment.TickCount64;
+        var key = (PacketInfo.DstKey(pkt), pi.SrcPort);
+        if (_quicFlows.TryGetValue(key, out long first) && now - first < QuicFlowMemoryMs) return;
+        if (_quicFlows.Count >= MaxQuicFlows) _quicFlows.Clear();
+        _quicFlows[key] = now;
+
+        if (now - _quicWindow >= 1000)
+        {
+            _quicWindow = now;
+            _quicCount = 0;
+        }
+        if (++_quicCount > MaxQuicRejectsPerSecond) return;
+
+        int n = PacketBuilder.BuildPortUnreachable(pkt, pi, _icmpBuf);
+        if (n > 0) SendInbound(_icmpBuf.AsSpan(0, n), addr);
+    }
+
+    // ------------------------------------------------------------------ "Hızlı DNS" (UDP redirect)
+
+    /// <summary>
+    /// NATs an outbound DNS query to the configured resolver (destination address and port rewritten, checksums
+    /// recomputed) and remembers the original destination for the replies. False = not handled (passed on as is).
+    /// </summary>
+    private bool TryRedirectFastDns(Span<byte> pkt, in PacketInfo pi, ref WinDivertAddress addr)
+    {
+        if (pi.PayloadLength < 12 || (pkt[pi.PayloadOffset + 2] & 0x80) != 0) return false;   // not a query
+        byte[]? server = pi.IsV6 ? _fastAddr6 : _fastAddr4;
+        if (server is null) return false;
+        ushort serverPort = pi.IsV6 ? _fastPort6 : _fastPort4;
+
+        long now = Environment.TickCount64;
+        PruneFastDnsFlows(now);
+        var dst = pi.IsV6 ? pkt.Slice(24, 16) : pkt.Slice(16, 4);
+        ushort id = BinaryPrimitives.ReadUInt16BigEndian(pkt[pi.PayloadOffset..]);
+        _fastFlows[(pi.IsV6, pi.SrcPort, id)] = new FastDnsFlow(dst.ToArray(), pi.DstPort, now + FastDnsFlowMs);
+
+        server.AsSpan().CopyTo(dst);
+        BinaryPrimitives.WriteUInt16BigEndian(pkt[(pi.L4Offset + 2)..], serverPort);
+        WinDivertNative.Send(_main, pkt, ref addr, recalc: true);
+        _handled = true;
+        return true;
+    }
+
+    /// <summary>Gives a reply of the resolver the source the client asked (original address and port 53).</summary>
+    private bool TryRestoreFastDnsReply(Span<byte> pkt, in PacketInfo pi, ref WinDivertAddress addr)
+    {
+        byte[]? server = pi.IsV6 ? _fastAddr6 : _fastAddr4;
+        if (server is null || pi.PayloadLength < 12 || pi.SrcPort != (pi.IsV6 ? _fastPort6 : _fastPort4)) return false;
+        var src = pi.IsV6 ? pkt.Slice(8, 16) : pkt.Slice(12, 4);
+        if (!src.SequenceEqual(new ReadOnlySpan<byte>(server))) return false;
+        ushort id = BinaryPrimitives.ReadUInt16BigEndian(pkt[pi.PayloadOffset..]);
+        if (!_fastFlows.TryGetValue((pi.IsV6, pi.DstPort, id), out var flow) || flow.ExpiresAt < Environment.TickCount64)
+            return false;
+
+        flow.Server.AsSpan().CopyTo(src);
+        BinaryPrimitives.WriteUInt16BigEndian(pkt[pi.L4Offset..], flow.ServerPort);
+        WinDivertNative.Send(_main, pkt, ref addr, recalc: true);
+        _handled = true;
+        Stats.IncrementDnsQueries();
+        return true;
+    }
+
+    private void PruneFastDnsFlows(long now)
+    {
+        if (_fastFlows.Count < MaxFastDnsFlows && now < _fastPruneAt) return;
+        _fastPruneAt = now + 5000;
+        List<(bool V6, ushort ClientPort, ushort Id)>? expired = null;
+        foreach (var kv in _fastFlows)
+            if (kv.Value.ExpiresAt < now) (expired ??= new List<(bool V6, ushort ClientPort, ushort Id)>()).Add(kv.Key);
+        if (expired is not null)
+            foreach (var k in expired) _fastFlows.Remove(k);
+        if (_fastFlows.Count >= MaxFastDnsFlows) _fastFlows.Clear();
+    }
+
+    private readonly record struct ForwardJob(byte[] Packet, int Length, PacketInfo Info, WinDivertAddress Addr, System.Net.IPEndPoint Server, CancellationToken Token);
+
+    /// <summary>
+    /// "Hızlı DNS" without global IPv6: an IPv6-transport query cannot be NAT-ed to the IPv4 resolver, so it is
+    /// consumed here, asked over an IPv4 socket and answered with an injected IPv6 reply from the address the client
+    /// asked. Left alone it would reach the router's resolver and get the ISP's poisoned answer first.
+    /// </summary>
+    private bool TryForwardFastDns(ReadOnlySpan<byte> pkt, in PacketInfo pi, in WinDivertAddress addr)
+    {
+        var server = _fastEp4;
+        var cts = _cts;
+        if (server is null || cts is null || pi.PayloadLength < 12) return false;
+        if ((pkt[pi.PayloadOffset + 2] & 0x80) != 0) return false;   // not a query
+        if (Interlocked.Increment(ref _dnsInFlight) > MaxDnsInFlight)
+        {
+            Interlocked.Decrement(ref _dnsInFlight);
+            return false;
+        }
+        var copy = ArrayPool<byte>.Shared.Rent(pkt.Length);
+        pkt.CopyTo(copy);
+        var job = new ForwardJob(copy, pkt.Length, pi, addr, server, cts.Token);
+        _ = Task.Run(() => ForwardFastDnsAsync(job));
+        _handled = true;
+        return true;
+    }
+
+    private async Task ForwardFastDnsAsync(ForwardJob job)
+    {
+        byte[]? outBuf = null;
+        try
+        {
+            var pi = job.Info;
+            var query = job.Packet.AsMemory(pi.PayloadOffset, pi.PayloadLength);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(job.Token);
+            timeout.CancelAfter(FastDnsForwardTimeoutMs);
+            using var udp = new System.Net.Sockets.UdpClient(System.Net.Sockets.AddressFamily.InterNetwork);
+            udp.Connect(job.Server);
+            await udp.SendAsync(query, timeout.Token).ConfigureAwait(false);
+            while (true)
+            {
+                var r = await udp.ReceiveAsync(timeout.Token).ConfigureAwait(false);
+                byte[] resp = r.Buffer;
+                if (resp.Length < 12 || resp[0] != query.Span[0] || resp[1] != query.Span[1] || (resp[2] & 0x80) == 0) continue;
+                outBuf = ArrayPool<byte>.Shared.Rent(40 + 8 + resp.Length);
+                int total = PacketBuilder.BuildUdpReply(job.Packet.AsSpan(0, job.Length), pi, resp, outBuf);
+                if (total > 0 && SendInbound(outBuf.AsSpan(0, total), job.Addr)) Stats.IncrementDnsQueries();
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // stopping, or no answer in time: the client retries / asks its other resolver
+        }
+        catch (Exception ex)
+        {
+            if (!_stopping) LimitedWrite("Warn", Strings.LogDnsInjectFailed(ex.Message));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(job.Packet);
+            if (outBuf is not null) ArrayPool<byte>.Shared.Return(outBuf);
+            Interlocked.Decrement(ref _dnsInFlight);
+        }
+    }
+
     // ------------------------------------------------------------------ DNS over HTTPS
 
     private readonly record struct DnsJob(byte[] Packet, int Length, PacketInfo Info, WinDivertAddress Addr, DohResolver Resolver, CancellationToken Token);
@@ -661,7 +893,9 @@ public sealed class DivertEngine : IBypassEngine
 
     // ------------------------------------------------------------------ helpers
 
-    internal static string? BuildMainFilter(BypassProfile p, bool doh)
+    /// <param name="dns">Capture outbound DNS: DoH (UDP and TCP/53) or "Hızlı DNS" (UDP/53).</param>
+    /// <param name="inbound">Optional inbound clause (complete filter expression) OR-ed to the outbound one.</param>
+    internal static string? BuildMainFilter(BypassProfile p, bool dns, string? inbound = null)
     {
         var parts = new List<string>(5);
         if (p.SplitTlsHello || p.FakePacket)
@@ -670,13 +904,15 @@ public sealed class DivertEngine : IBypassEngine
             parts.Add("(tcp and tcp.DstPort == 80 and tcp.PayloadLength > 16)");
         if (p.BlockQuic)
             parts.Add("(udp and udp.DstPort == 443)");
-        if (doh)
+        if (dns)
         {
             parts.Add("(udp and udp.DstPort == 53)");
-            parts.Add("(tcp and tcp.DstPort == 53)");
+            // TCP/53 is answered via DoH; "Hızlı DNS" leaves it to the system resolver (truncated answers only)
+            if (p.Dns == DnsMode.DoH) parts.Add("(tcp and tcp.DstPort == 53)");
         }
         if (parts.Count == 0) return null;
-        return "outbound and !loopback and !impostor and (" + string.Join(" or ", parts) + ")";
+        string outbound = "outbound and !loopback and !impostor and (" + string.Join(" or ", parts) + ")";
+        return inbound is null ? outbound : "(" + outbound + ") or (" + inbound + ")";
     }
 
     internal static string SniffFilterText => SniffFilter;
@@ -693,6 +929,8 @@ public sealed class DivertEngine : IBypassEngine
         if (p.HttpHostTricks) t.Add(Strings.DescHostTrick);
         if (p.BlockQuic) t.Add(Strings.DescBlockQuic);
         if (p.Dns == DnsMode.DoH) t.Add($"DoH: {DohResolver.FindProvider(p.DohProviderName).Name}");
+        else if (p.Dns == DnsMode.UdpRedirect)
+            t.Add($"{Strings.DescFastDns}: {FastDns.Resolve(p.FastDnsServer, System.Net.Sockets.AddressFamily.InterNetwork)}");
         return t.Count == 0 ? Strings.DescNoTechnique : string.Join(", ", t);
     }
 
